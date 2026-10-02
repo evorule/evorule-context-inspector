@@ -15,7 +15,7 @@ evorule 治理 LLM agent 的规则决策时,审计链记录了规则执行事实
 - **响应侧** `ResponseObservation`:回包后追加(真实 usage / finish_reason / 截断检测),按 `response_to` 配对
 - **五维健康指标**:压力(四档左闭右开)/ cache 命中率 / 漂移(multiset Jaccard + SystemPromptChanged / ToolSetChanged / ContextReset 三显式检测)/ 截断 / 重复率(word-shingle),全万分比整数存储
 - **独立 BLAKE3 审计链**:链步复用 `evorule-reactor::chain_step`,链头定期入 G-A1 Ed25519 锚点流
-- **in-process 集成**:evorule-server 可选 feature(默认开,可关),MITM 监听随 server 启停,端口段 19100(loopback-only)
+- **插件形态**(实施文档 v3.1):manifest 型插件(Plugin Contract v1.2,ai-plugin 同款),独立进程承载 MITM 监听 + 审计链 + context API + `/admin/bindings`,evorule-server 仓零机制改动;端口段 19100(loopback-only)
 
 ## 隐私模型(默认强隐私)
 
@@ -38,11 +38,11 @@ evorule 治理 LLM agent 的规则决策时,审计链记录了规则执行事实
 
 | Phase | 内容 | 状态 |
 |-------|------|------|
-| 0 | 骨架与 registry 登记 | 🚧 |
+| 0 | 骨架与 registry 登记 | ✅(42a263c) |
 | 1 | 数据模型与哈希(canonical JSON + skeleton_hash + 域登记) | ☐ |
 | 2 | Provider 与流式(4 provider + SSE) | ☐ |
-| 3 | 链与 server 集成(InspectorLog + MITM + verify-chain 协同) | ☐ |
-| 4 | console-cloud UI(Context/ 六组件) | ☐ |
+| 3 | 链与插件集成(InspectorLog + MITM + verify-chain 协同;v3.1 插件形态) | ☐ |
+| 4 | UI(声明式资产 + 通用外壳;R4 约束) | ☐ |
 | 5 | 文档与发布 | ☐ |
 
 ## 工程纪律
