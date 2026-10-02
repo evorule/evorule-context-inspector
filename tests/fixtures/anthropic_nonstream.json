@@ -1,0 +1,9 @@
+{
+  "id": "msg_spec_derived_01",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4",
+  "content": [{"type": "text", "text": "ok"}],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 42, "output_tokens": 5, "cache_read_input_tokens": 20}
+}

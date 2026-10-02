@@ -1,0 +1,7 @@
+data: {"id":"spec-derived-ds-02","object":"chat.completion.chunk","model":"deepseek-chat","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}
+
+data: {"id":"spec-derived-ds-02","object":"chat.completion.chunk","model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"spec-derived-ds-02","object":"chat.completion.chunk","model":"deepseek-chat","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_cache_hit_tokens":64,"prompt_cache_miss_tokens":36}}
+
+data: [DONE]

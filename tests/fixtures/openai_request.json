@@ -1,0 +1,7 @@
+{
+  "model": "MiniMax-M2.5",
+  "messages": [
+    {"role": "system", "content": "You are a terse assistant."},
+    {"role": "user", "content": "Reply with exactly one word: ok"}
+  ]
+}

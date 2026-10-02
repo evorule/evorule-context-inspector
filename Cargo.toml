@@ -2,7 +2,7 @@
 name = "evorule-llm-context-inspector"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.80"
 license = "AGPL-3.0-or-later"
 description = "LLM 上下文快照与健康评估审计链 —— 把 agent 决策时的上下文结构化入独立 BLAKE3 审计链"
 readme = "README.md"
@@ -20,6 +20,11 @@ evorule-governance = { path = "../evorule/evorule-governance" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
+# token 估算绑定（实施文档 v3：不自研分词）；非 OpenAI 家族模型用其词元近似，
+# ProviderReported 回填后以真实计数为准。
+tiktoken-rs = "0.12"
+# 截断标记可配正则（设计稿 §3.4 通用路径）。
+regex = "1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

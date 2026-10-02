@@ -1,0 +1,15 @@
+{
+  "id": "spec-derived-ds-01",
+  "object": "chat.completion",
+  "model": "deepseek-chat",
+  "choices": [
+    {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}
+  ],
+  "usage": {
+    "prompt_tokens": 1033,
+    "completion_tokens": 199,
+    "total_tokens": 1232,
+    "prompt_cache_hit_tokens": 768,
+    "prompt_cache_miss_tokens": 265
+  }
+}
