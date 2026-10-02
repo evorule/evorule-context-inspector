@@ -255,3 +255,111 @@ async fn acceptance_13_bindings_and_unattributed_bucket() {
         .unwrap();
     assert_eq!(del2.status(), 404);
 }
+
+// ---- 对账（§5.3 v3.3 如实降级版）：cause_fact 存在性 + 双链校验 ----
+
+fn fact_command(id: u64) -> evorule_reactor::Fact {
+    evorule_reactor::Fact::Command {
+        id: evorule_reactor::FactId(id),
+        instruction: evorule_tcb::JsonValue::object_from_pairs(&[(
+            "op",
+            evorule_tcb::JsonValue::string("noop"),
+        )]),
+    }
+}
+
+#[tokio::test]
+async fn acceptance_reconcile_cause_fact_existence() {
+    let dir = std::env::temp_dir().join(format!("recon_test_{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // fact WAL（tier1 哈希格式，fact_hash/chain_step 用 reactor 原语）
+    let fact_log = dir.join("fact.log");
+    let mut prev = "genesis".to_owned();
+    let mut raw_lines: Vec<String> = Vec::new();
+    for (i, fact) in [fact_command(5), fact_command(6)].iter().enumerate() {
+        let content_hash = evorule_reactor::fact_hash(fact).unwrap();
+        let chain_hash = evorule_reactor::chain_step(&prev, &content_hash);
+        let line = serde_json::json!({
+            "version_before": i as u64,
+            "fact": {
+                "type": "Command",
+                "id": if i == 0 { 5u64 } else { 6u64 },
+                "instruction": {"op": "noop"}
+            },
+            "content_hash": content_hash,
+            "prev_hash": prev,
+            "chain_hash": chain_hash,
+        });
+        raw_lines.push(line.to_string());
+        prev = chain_hash;
+    }
+    std::fs::write(&fact_log, raw_lines.join("\n") + "\n").unwrap();
+
+    // inspector WAL：两条快照，cause_fact 一真一假
+    let inspector_log = dir.join("inspector.log");
+    {
+        let chain = Arc::new(InspectorLog::open(&inspector_log).unwrap());
+        let mk = |seq: u64, cause: Option<u64>| {
+            use evorule_llm_context_inspector::model::{
+                Composition, ContextSkeleton, ContextSnapshot, MessageEntry, SessionLink, ToolEntry,
+            };
+            use evorule_llm_context_inspector::{
+                BindingKind, ContentKind, ProviderKind, TokenSource,
+            };
+            let skeleton = ContextSkeleton::new(
+                ProviderKind::DeepSeek,
+                "deepseek-chat",
+                b"sys",
+                vec![ToolEntry::new("t", b"schema")],
+                vec![MessageEntry::new(
+                    "user",
+                    ContentKind::Text,
+                    format!("m{seq}").as_bytes(),
+                    0,
+                )],
+            );
+            let composition = Composition::new(3, 5, 20, 0, 1, 1, TokenSource::Estimated).unwrap();
+            ContextSnapshot::new(
+                uuid::Uuid::from_u128(u128::from(seq)),
+                SessionLink::new(
+                    Some(1),
+                    BindingKind::Header,
+                    cause.map(evorule_reactor::FactId),
+                ),
+                seq * 1000,
+                ProviderKind::DeepSeek,
+                "deepseek-chat",
+                None,
+                composition,
+                skeleton,
+            )
+            .unwrap()
+        };
+        chain
+            .append(InspectorRecord::Snapshot(mk(1, Some(5))))
+            .unwrap();
+        chain
+            .append(InspectorRecord::Snapshot(mk(2, Some(99))))
+            .unwrap();
+    }
+
+    let report = evorule_llm_context_inspector::reconcile::reconcile(&fact_log, &inspector_log)
+        .unwrap_or_else(|e| panic!("对账失败: {e}"));
+    assert_eq!(report.facts, 2);
+    assert!(report.fact_chain_hashed, "新格式 WAL → 哈希链为真校验");
+    assert!(report.inspector_chain.ok);
+    assert_eq!(report.cause_checked, 2);
+    assert_eq!(
+        report.missing_cause.len(),
+        1,
+        "FactId(99) 不在 fact WAL → 断引必报"
+    );
+    assert_eq!(report.missing_cause[0]["cause_fact"], 99);
+    assert!(
+        report.time_window_check.contains("unsupported"),
+        "时间窗能力如实声明"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

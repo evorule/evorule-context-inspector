@@ -113,15 +113,15 @@ pub struct InspectorLog {
     inner: RwLock<Inner>,
 }
 
-/// WAL JSONL 行（读取态，拥有 record）。
+/// WAL JSONL 行（读取态，拥有 record；crate 内复用——reconcile 扫描）。
 #[derive(Debug, Serialize, Deserialize)]
-struct WalLine {
-    seq: u64,
-    prev_hash: crate::HashHex,
-    record_hash: crate::HashHex,
-    chain_hash: crate::HashHex,
+pub(crate) struct WalLine {
+    pub(crate) seq: u64,
+    pub(crate) prev_hash: crate::HashHex,
+    pub(crate) record_hash: crate::HashHex,
+    pub(crate) chain_hash: crate::HashHex,
     #[serde(flatten)]
-    record: InspectorRecord,
+    pub(crate) record: InspectorRecord,
 }
 
 /// WAL JSONL 行（写入态，借位序列化——append 内 record 所有权保留给内存）。

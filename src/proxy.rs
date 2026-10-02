@@ -78,11 +78,20 @@ impl Default for Upstreams {
     }
 }
 
+/// 验证上下文（锚点服务 + 对账路径；启动期一次性注入）。
+#[derive(Default, Clone)]
+pub struct VerifyContext {
+    pub anchors: Option<Arc<crate::anchor::AnchorService>>,
+    pub inspector_wal_path: Option<std::path::PathBuf>,
+    pub fact_log_path: Option<std::path::PathBuf>,
+}
+
 /// 代理共享状态（admin 口与所有会话口共用）。
 pub struct ProxyState {
     /// 链日志（落盘或内存，由启动参数决定）。
     pub chain: Arc<InspectorLog>,
     pub upstreams: Upstreams,
+    verify: std::sync::OnceLock<VerifyContext>,
     http: reqwest::Client,
     bindings: RwLock<HashMap<u16, SessionBinding>>,
     /// 已拉起监听器的端口（幂等 serve 判定）。
@@ -97,6 +106,7 @@ impl ProxyState {
         Self {
             chain,
             upstreams,
+            verify: std::sync::OnceLock::new(),
             http: reqwest::Client::new(),
             bindings: RwLock::new(HashMap::new()),
             served: RwLock::new(std::collections::HashSet::new()),
@@ -197,6 +207,15 @@ impl ProxyState {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// 注入验证上下文（启动期一次；重复注入时首个生效）。
+    pub fn set_verify_context(&self, ctx: VerifyContext) {
+        let _ = self.verify.set(ctx);
+    }
+
+    pub fn verify_context(&self) -> VerifyContext {
+        self.verify.get().cloned().unwrap_or_default()
     }
 }
 

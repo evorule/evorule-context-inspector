@@ -26,6 +26,8 @@ pub fn query_router() -> Router<Arc<ProxyState>> {
             "/services/context_session_health",
             post(service_session_health),
         )
+        .route("/services/context_verify_chain", post(service_verify_chain))
+        .route("/services/context_reconcile", post(service_reconcile))
 }
 
 fn chain_of(state: &Arc<ProxyState>) -> Arc<InspectorLog> {
@@ -48,16 +50,76 @@ async fn service_session_health(
     session_health(State(state), AxumPath(sid)).await
 }
 
+/// 全链验证（含锚点流：先按节律补发，再全量验签+链接+覆盖检查）。
 async fn verify(State(state): State<Arc<ProxyState>>) -> Response {
-    let report = chain_of(&state)
-        .verify_chain()
-        .unwrap_or_else(|e| crate::chain::ChainReport {
-            records: 0,
+    let ctx = state.verify_context();
+    let anchors = ctx.anchors.as_ref().map(|a| {
+        let _ = a.publish_if_due(); // 节律补发（幂等：不足 N 条为 None）
+        a.verify().unwrap_or_else(|e| crate::anchor::AnchorReport {
+            entries: 0,
             ok: false,
             first_bad_seq: None,
             reason: Some(e.to_string()),
-        });
-    Json(report).into_response()
+            covers_chain: false,
+        })
+    });
+    let chain_report =
+        chain_of(&state)
+            .verify_chain()
+            .unwrap_or_else(|e| crate::chain::ChainReport {
+                records: 0,
+                ok: false,
+                first_bad_seq: None,
+                reason: Some(e.to_string()),
+            });
+    Json(serde_json::json!({
+        "chain": chain_report,
+        "anchors": anchors,
+    }))
+    .into_response()
+}
+
+/// 契约服务：context_verify_chain（server invoke 通道触达；等同 /api/context/verify）。
+async fn service_verify_chain(State(state): State<Arc<ProxyState>>) -> Response {
+    verify(State(state)).await
+}
+
+/// 契约服务：context_reconcile（双链校验 + cause_fact 存在性对账）。
+/// 路径缺省取部署配置（VerifyContext），可由调用参数覆盖。
+async fn service_reconcile(
+    State(state): State<Arc<ProxyState>>,
+    axum::Json(req): axum::Json<serde_json::Value>,
+) -> Response {
+    let ctx = state.verify_context();
+    let arg_path = |key: &str, default: Option<std::path::PathBuf>| -> Option<std::path::PathBuf> {
+        req.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(std::path::PathBuf::from)
+            .or(default)
+    };
+    let Some(fact_log) = arg_path("fact_log", ctx.fact_log_path) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            serde_json::json!({"error": "缺 fact_log（参数或部署配置 --fact-log）"}).to_string(),
+        )
+            .into_response();
+    };
+    let Some(inspector_log) = arg_path("inspector_log", ctx.inspector_wal_path) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            serde_json::json!({"error": "缺 inspector_log（仅内存模式无 WAL，不可对账）"})
+                .to_string(),
+        )
+            .into_response();
+    };
+    match crate::reconcile::reconcile(&fact_log, &inspector_log) {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({"error": e.to_string()}).to_string(),
+        )
+            .into_response(),
+    }
 }
 
 async fn unattributed(State(state): State<Arc<ProxyState>>) -> Response {

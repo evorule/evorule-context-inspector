@@ -31,6 +31,7 @@
 //!   禁自写 blake3，禁第二套链步实现。
 //! - **G5 代码质量**：0 panic / unwrap / expect（deny 级 lints，测试模块除外）。
 
+pub mod anchor;
 pub mod api;
 pub mod canonical;
 pub mod chain;
@@ -38,6 +39,7 @@ pub mod metrics;
 pub mod model;
 pub mod provider;
 pub mod proxy;
+pub mod reconcile;
 pub mod tokens;
 
 use uuid::Uuid;
