@@ -104,7 +104,12 @@ fn run(args: &CliArgs) -> Result<evorule_llm_context_inspector::doctor::Diagnosi
     let attribution = attribute(&latest.messages, latest.tools, |text| {
         evorule_llm_context_inspector::tokens::estimate_text(&model, text).unwrap_or(0)
     });
-    let checks = run_checks(&latest.messages, &attribution, &constraints);
+    let checks = run_checks(
+        &latest.messages,
+        &attribution,
+        &constraints,
+        &face.rolling_summaries,
+    );
 
     let blind_spot = wire_face
         .as_ref()
@@ -117,6 +122,7 @@ fn run(args: &CliArgs) -> Result<evorule_llm_context_inspector::doctor::Diagnosi
             memory_originals: face.memory_originals,
             stable_entries: face.stable_entries,
             io_requests: face.io_requests,
+            rolling_summaries: face.rolling_summaries.len() as u64,
         },
         wire_face: wire_face
             .as_ref()
@@ -145,12 +151,13 @@ fn run(args: &CliArgs) -> Result<evorule_llm_context_inspector::doctor::Diagnosi
 fn print_text(report: &evorule_llm_context_inspector::doctor::DiagnosisReport) {
     println!("=== 上下文诊断报告（零侵入，只读） ===");
     println!(
-        "fact 面: facts={} wire快照={} 记忆原文={} stable={} io={}",
+        "fact 面: facts={} wire快照={} 记忆原文={} stable={} io={} 摘要落链={}",
         report.fact_face.total_facts,
         report.fact_face.wire_snapshots,
         report.fact_face.memory_originals,
         report.fact_face.stable_entries,
-        report.fact_face.io_requests
+        report.fact_face.io_requests,
+        report.fact_face.rolling_summaries
     );
     if let Some(w) = &report.wire_face {
         println!("wire 面: 观测轮次={}", w.observed_rounds);

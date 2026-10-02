@@ -57,10 +57,21 @@ pub struct AttributedMessage {
 }
 
 /// fact 面抽取结果。
+/// 一条滚动摘要落链记录（R3 方案 B：PayloadUpdate rolling_summary）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RollingSummaryLanding {
+    pub gen: u64,
+    pub frozen_len_before: u64,
+    pub frozen_len_after: u64,
+    pub summary_text: String,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct FactFace {
     /// Command facts 中携带的 LLM 调用 wire 条数
     pub wire_snapshots: u64,
+    /// 滚动摘要落链记录（R3 方案 B；I5 保真检查输入）
+    pub rolling_summaries: Vec<RollingSummaryLanding>,
     /// PayloadUpdate 原始全文条数（__memory__）
     pub memory_originals: u64,
     /// Stable（sediment 摘要/稳定事实/事件）条数
@@ -122,6 +133,8 @@ pub struct FactFaceSummary {
     pub memory_originals: u64,
     pub stable_entries: u64,
     pub io_requests: u64,
+    /// 滚动摘要落链条数（R3 方案 B）
+    pub rolling_summaries: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -250,7 +263,32 @@ pub fn extract_fact_face(
                     });
                 }
             }
-            evorule_reactor::Fact::PayloadUpdate { path, .. } => {
+            evorule_reactor::Fact::PayloadUpdate { path, value, .. } => {
+                // value 为 TCB JsonValue——转 serde 后走统一访问器
+                let v = evorule_reactor::tcb_to_serde(value);
+                if path.ends_with("rolling_summary") {
+                    // R3 方案 B 落链：摘要代账（I5 保真检查输入）
+                    let gen = v.get("gen").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let before = v
+                        .get("frozen_len_before")
+                        .and_then(|x| x.as_u64())
+                        .unwrap_or(0);
+                    let after = v
+                        .get("frozen_len_after")
+                        .and_then(|x| x.as_u64())
+                        .unwrap_or(0);
+                    let text = v
+                        .get("summary_text")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_owned();
+                    face.rolling_summaries.push(RollingSummaryLanding {
+                        gen,
+                        frozen_len_before: before,
+                        frozen_len_after: after,
+                        summary_text: text,
+                    });
+                }
                 if path.starts_with("__memory__") {
                     face.memory_originals += 1;
                 }
@@ -360,11 +398,45 @@ fn permyriad(part: u64, total: u64) -> u64 {
     (u128::from(part) * 10_000 / u128::from(total.max(1))) as u64
 }
 
+/// I5 摘要保真（R3 方案 B 落地后可验证）：对照约束源与每代摘要文本，
+/// 检测压缩丢约束（参考档失败模式 F2）。缺约束 = Critical（对照 dropped
+/// 原文核验——persist 全文在链，可定位丢失内容）。
+pub fn i5_summary_fidelity(
+    landings: &[RollingSummaryLanding],
+    constraints: &ConstraintSource,
+) -> Vec<CheckFinding> {
+    let mut out = Vec::new();
+    for landing in landings {
+        out.push(CheckFinding {
+            checker: "i5_summary_fidelity",
+            severity: Severity::Info,
+            message: format!(
+                "滚动摘要 gen={} frozen={}->{} 已落链——I5 保真可验证（对照约束源）",
+                landing.gen, landing.frozen_len_before, landing.frozen_len_after
+            ),
+        });
+        for p in &constraints.phrases {
+            if !landing.summary_text.contains(p.as_str()) {
+                out.push(CheckFinding {
+                    checker: "i5_summary_fidelity",
+                    severity: Severity::Critical,
+                    message: format!(
+                        "摘要丢失约束（I5/F2）：gen={} 摘要缺「{}」——对照 dropped 原文核验（persist 全文在链）",
+                        landing.gen, p
+                    ),
+                });
+            }
+        }
+    }
+    out
+}
+
 /// 检查器入参：归因结果 + 原始消息（供内容级检查）。
 pub fn run_checks(
     messages: &[FaceMessage],
     attribution: &[AttributedMessage],
     constraints: &ConstraintSource,
+    landings: &[RollingSummaryLanding],
 ) -> Vec<CheckFinding> {
     let mut out = Vec::new();
     let total_tokens: u64 = attribution.iter().map(|a| a.tokens_est).sum();
@@ -441,6 +513,18 @@ pub fn run_checks(
 
     // 6) I2 字面级：同层重复矛盾（同层内同一关键词的正反极性共存）——保守起步：
     //    与 repetition 检查互补，此处仅报告同层完全同文重复（已在 repetition 覆盖），占位说明。
+
+    // 7) I5 摘要保真（R3 落链后可验证；无落链 = 报告能力边界）
+    if landings.is_empty() {
+        out.push(CheckFinding {
+            checker: "i5_summary_fidelity",
+            severity: Severity::Info,
+            message: "链上无滚动摘要落链记录——I5 摘要保真暂不可验证（R3 方案 B 未启用或无摘要代）"
+                .to_owned(),
+        });
+    } else {
+        out.extend(i5_summary_fidelity(landings, constraints));
+    }
     out
 }
 

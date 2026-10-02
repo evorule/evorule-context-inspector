@@ -127,7 +127,7 @@ fn constraint_survival_and_literal_i1() {
     assert_eq!(constraints.source, "heuristic_system_prompt");
     assert_eq!(constraints.phrases.len(), 2);
 
-    let checks = run_checks(&messages, &attribution, &constraints);
+    let checks = run_checks(&messages, &attribution, &constraints, &[]);
     let survival: Vec<_> = checks
         .iter()
         .filter(|c| c.checker == "constraint_presence")
@@ -237,4 +237,44 @@ fn cli_determinism_two_runs_byte_identical() {
     let report: serde_json::Value = serde_json::from_slice(&outputs[0]).unwrap();
     assert_eq!(report["fact_face"]["wire_snapshots"], 1);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- I5 摘要保真（R3 方案 B 落地后可验证）----
+
+#[tokio::test]
+async fn i5_summary_fidelity_detects_lost_constraints() {
+    use evorule_llm_context_inspector::doctor::ConstraintSource;
+    use evorule_llm_context_inspector::doctor::{i5_summary_fidelity, RollingSummaryLanding};
+
+    let constraints = ConstraintSource {
+        source: "heuristic_system_prompt",
+        phrases: vec!["禁止编造数字".to_owned(), "必须引用来源".to_owned()],
+    };
+
+    // 场景 1：摘要完整保留约束 → 仅 Info（无 Critical）
+    let full = vec![RollingSummaryLanding {
+        gen: 1,
+        frozen_len_before: 0,
+        frozen_len_after: 7,
+        summary_text: "禁止编造数字，必须引用来源；已完成核对。".to_owned(),
+    }];
+    let r1 = i5_summary_fidelity(&full, &constraints);
+    assert!(!r1
+        .iter()
+        .any(|c| c.severity == evorule_llm_context_inspector::doctor::Severity::Critical));
+
+    // 场景 2：摘要丢「必须引用来源」→ Critical（F2 压缩丢失，对照 dropped 原文核验）
+    let lossy = vec![RollingSummaryLanding {
+        gen: 2,
+        frozen_len_before: 7,
+        frozen_len_after: 12,
+        summary_text: "禁止编造数字的行为已记录。".to_owned(),
+    }];
+    let r2 = i5_summary_fidelity(&lossy, &constraints);
+    let criticals: Vec<_> = r2
+        .iter()
+        .filter(|c| c.severity == evorule_llm_context_inspector::doctor::Severity::Critical)
+        .collect();
+    assert_eq!(criticals.len(), 1, "丢「必须引用来源」应报一条 Critical");
+    assert!(criticals[0].message.contains("必须引用来源"));
 }
