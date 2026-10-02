@@ -1,0 +1,21 @@
+# Rust 构建产物
+/target
+
+# 锁文件(库 crate,对齐 evorule-hash 先例)
+Cargo.lock
+
+# 本地运行时产物(inspector WAL / content 旁挂文件,永不入库)
+*.inspector.log
+content-*.jsonl
+
+# 密钥与环境(密扫 + push 安全脚本双防线)
+.env
+.env.*
+*.pem
+*.key
+
+# 日志与编辑器
+*.log
+.idea/
+.vscode/
+.trae/

@@ -1,0 +1,34 @@
+[package]
+name = "evorule-llm-context-inspector"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "AGPL-3.0-or-later"
+description = "LLM 上下文快照与健康评估审计链 —— 把 agent 决策时的上下文结构化入独立 BLAKE3 审计链"
+readme = "README.md"
+keywords = ["audit-chain", "blake3", "llm", "observability", "deterministic"]
+categories = ["development-tools"]
+
+[dependencies]
+# 链步单一真相源：复用冻结仓 chain_step（blake3(prev_hash + content_hash)），
+# 库依赖复用，不触碰规则执行路径（实施文档 v3 §1 哈希依赖方案）。
+evorule-reactor = { path = "../evorule/evorule-reactor" }
+# 内容哈希原语：digest / json_digest（禁止自写 blake3，B 族约束）。
+evorule-hash = { path = "../evorule-hash" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+cognitive_complexity = { level = "warn", priority = -1 }
+too_many_lines = { level = "warn", priority = -1 }
+type_complexity = { level = "warn", priority = -1 }
+module_inception = "warn"
+all = { level = "warn", priority = -1 }

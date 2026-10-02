@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 EvoRule Project
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Clippy + fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      # 本仓 path 依赖 ../evorule/evorule-reactor(工作区外),CI checkout 需同构布局;
+      # 推远端后在镜像仓以 submodule/actions 复现该布局(审批点 1 后补 CI 布局说明)。
+      - name: Checkout sibling evorule workspace
+        uses: actions/checkout@v4
+        with:
+          repository: evorule/evorule
+          ref: main
+          path: evorule
+        continue-on-error: true
+
+      - name: Checkout sibling evorule-hash
+        uses: actions/checkout@v4
+        with:
+          repository: evorule/evorule-hash
+          ref: main
+          path: evorule-hash
+        continue-on-error: true
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Checkout sibling evorule workspace
+        uses: actions/checkout@v4
+        with:
+          repository: evorule/evorule
+          ref: main
+          path: evorule
+        continue-on-error: true
+
+      - name: Checkout sibling evorule-hash
+        uses: actions/checkout@v4
+        with:
+          repository: evorule/evorule-hash
+          ref: main
+          path: evorule-hash
+        continue-on-error: true
+
+      - name: cargo test
+        run: cargo test
+
+  coverage:
+    name: Coverage (tarpaulin)
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Checkout sibling evorule workspace
+        uses: actions/checkout@v4
+        with:
+          repository: evorule/evorule
+          ref: main
+          path: evorule
+        continue-on-error: true
+
+      - name: Checkout sibling evorule-hash
+        uses: actions/checkout@v4
+        with:
+          repository: evorule/evorule-hash
+          ref: main
+          path: evorule-hash
+        continue-on-error: true
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Run tarpaulin
+        run: cargo tarpaulin --skip-clean --out Xml --timeout 600

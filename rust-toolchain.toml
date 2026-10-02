@@ -1,0 +1,12 @@
+# =============================================================================
+# Rust toolchain 锁定(对齐 D:\evorule 主仓 rust-toolchain.toml)
+#
+# - 锁 1.98.1:主仓实测 1.97.1 对 evorule-reactor 存在稳定触发的 ICE
+#   (rmeta/encoder no entry found for key);本仓 path 依赖 evorule-reactor,
+#   同锁避免本地构建踩同一 ICE。
+# - clippy + rustfmt 组件必须装(每阶段 DoD:fmt/clippy 净)。
+# =============================================================================
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
