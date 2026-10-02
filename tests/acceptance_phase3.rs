@@ -363,3 +363,121 @@ async fn acceptance_reconcile_cause_fact_existence() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- --store-content 旁挂（隐私例外模式）与代理错误路径 ----
+
+#[tokio::test]
+async fn store_content_writes_original_text_linked_to_snapshot() {
+    let mock = spawn_mock_upstream().await;
+    let chain = Arc::new(InspectorLog::in_memory());
+    let content_dir =
+        std::env::temp_dir().join(format!("content_store_{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&content_dir).unwrap();
+    let state = Arc::new(ProxyState::new(
+        chain.clone(),
+        Upstreams {
+            openai: mock.clone(),
+            ..Upstreams::default()
+        },
+        0,
+    ));
+    state.set_content_dir(Some(content_dir.clone()));
+    let session_port = serve_session(state, 11).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{session_port}/v1/chat/completions"
+        ))
+        .json(&serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "ORIGINAL-TEXT-MARKER"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    assert_eq!(status, 200, "store_content 请求失败: {body}");
+
+    let raw = std::fs::read_to_string(content_dir.join("content.jsonl")).unwrap();
+    assert!(raw.contains("ORIGINAL-TEXT-MARKER"), "旁挂必须含原文");
+    assert!(raw.contains("\"snapshot_id\""), "旁挂必须含关联 ID");
+    let _ = std::fs::remove_dir_all(&content_dir);
+}
+
+#[tokio::test]
+async fn invalid_json_body_passes_through_without_snapshot() {
+    let mock = spawn_mock_upstream().await;
+    let chain = Arc::new(InspectorLog::in_memory());
+    let state = Arc::new(ProxyState::new(
+        chain.clone(),
+        Upstreams {
+            openai: mock.clone(),
+            ..Upstreams::default()
+        },
+        0,
+    ));
+    let session_port = serve_session(state, 12).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{session_port}/v1/chat/completions"
+        ))
+        .header("content-type", "application/json")
+        .body("this is not json")
+        .send()
+        .await
+        .unwrap();
+    // 上游如何处置非法体（400 等）属透传语义；本测试断言的是观测面：
+    assert!(
+        !resp.status().is_server_error(),
+        "非法体透传不应引发代理自身 5xx"
+    );
+    let records = chain.hot_records().unwrap();
+    assert!(
+        records
+            .iter()
+            .all(|(_, r)| !matches!(r, InspectorRecord::Snapshot(_))),
+        "不可解析体不得产生快照"
+    );
+}
+
+#[tokio::test]
+async fn unreachable_upstream_returns_502_with_snapshot_on_chain() {
+    let chain = Arc::new(InspectorLog::in_memory());
+    // 指向必然关闭的端口 → 上游不可达路径
+    let state = Arc::new(ProxyState::new(
+        chain.clone(),
+        Upstreams {
+            openai: "http://127.0.0.1:1".into(),
+            ..Upstreams::default()
+        },
+        0,
+    ));
+    let session_port = serve_session(state, 13).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{session_port}/v1/chat/completions"
+        ))
+        .json(&serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "x"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        502,
+        "上游不可达必须显式 502（fail-fast 可见）"
+    );
+    // 快照在转发前已定格入链（请求侧事实独立于上游可达性）
+    let records = chain.hot_records().unwrap();
+    assert_eq!(records.len(), 1);
+    assert!(matches!(records[0].1, InspectorRecord::Snapshot(_)));
+    assert!(chain.verify_chain().unwrap().ok);
+}

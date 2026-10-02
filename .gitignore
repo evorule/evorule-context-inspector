@@ -13,6 +13,8 @@ content-*.jsonl
 .env.*
 *.pem
 *.key
+# 插件自持运行时数据(锚点私钥/链 WAL/旁挂原文——永不入库)
+data/
 
 # 日志与编辑器
 *.log

@@ -92,6 +92,8 @@ pub struct ProxyState {
     pub chain: Arc<InspectorLog>,
     pub upstreams: Upstreams,
     verify: std::sync::OnceLock<VerifyContext>,
+    /// `--store-content` 旁挂目录（Some = 启用原文旁挂；None = 默认强隐私）。
+    content_dir: std::sync::OnceLock<Option<std::path::PathBuf>>,
     http: reqwest::Client,
     bindings: RwLock<HashMap<u16, SessionBinding>>,
     /// 已拉起监听器的端口（幂等 serve 判定）。
@@ -107,6 +109,7 @@ impl ProxyState {
             chain,
             upstreams,
             verify: std::sync::OnceLock::new(),
+            content_dir: std::sync::OnceLock::new(),
             http: reqwest::Client::new(),
             bindings: RwLock::new(HashMap::new()),
             served: RwLock::new(std::collections::HashSet::new()),
@@ -217,6 +220,15 @@ impl ProxyState {
     pub fn verify_context(&self) -> VerifyContext {
         self.verify.get().cloned().unwrap_or_default()
     }
+
+    /// 注入原文旁挂目录（启动期一次；Some = `--store-content` 启用）。
+    pub fn set_content_dir(&self, dir: Option<std::path::PathBuf>) {
+        let _ = self.content_dir.set(dir);
+    }
+
+    pub fn content_dir(&self) -> Option<std::path::PathBuf> {
+        self.content_dir.get().cloned().flatten()
+    }
 }
 
 /// 请求路径/体 → provider 识别。
@@ -276,17 +288,28 @@ fn forward_headers(headers: &HeaderMap) -> HeaderMap {
     out
 }
 
-/// 快照侧：请求体 → 骨架/组成 → 入链；返回 snapshot_id（体不可解析 → None，
-/// 纯透传不观测）。
+/// 快照侧结果：Captured=已入链（旁挂成功或未启用）；Passthrough=体不可解析
+/// 等纯透传不观测；Failed=入链/旁挂失败（fail-fast，调用方回 500 可见，R4）。
+enum SnapshotOutcome {
+    Captured(uuid::Uuid),
+    Passthrough,
+    Failed(String),
+}
+
+/// 快照侧：请求体 → 骨架/组成 → 入链（+`--store-content` 时原文旁挂）。
 fn take_snapshot(
     state: &ProxyState,
     session: Option<(SessionId, BindingKind)>,
     kind: ProviderKind,
     body: &serde_json::Value,
-) -> Option<uuid::Uuid> {
+) -> SnapshotOutcome {
     let p = provider_impl(kind);
-    let extracted = p.extract_request(body).ok()?;
-    let counts = p.count_tokens(&extracted).ok()?;
+    let Ok(extracted) = p.extract_request(body) else {
+        return SnapshotOutcome::Passthrough;
+    };
+    let Ok(counts) = p.count_tokens(&extracted) else {
+        return SnapshotOutcome::Passthrough;
+    };
     let window =
         crate::provider::window_of(kind, &extracted.model, extracted.request_options.as_ref());
     let tools = crate::provider::skeleton_tools(&extracted).unwrap_or_default();
@@ -308,7 +331,7 @@ fn take_snapshot(
             })
             .collect(),
     );
-    let composition = Composition::new(
+    let composition = match Composition::new(
         counts.system_tokens,
         counts.tools_tokens,
         counts.messages_tokens,
@@ -316,13 +339,15 @@ fn take_snapshot(
         u32::try_from(extracted.messages.len()).unwrap_or(u32::MAX),
         u32::try_from(extracted.tools.len()).unwrap_or(u32::MAX),
         crate::TokenSource::Estimated,
-    )
-    .ok()?;
+    ) {
+        Ok(c) => c,
+        Err(e) => return SnapshotOutcome::Failed(format!("组成核账失败: {e}")),
+    };
     let (sid, binding) = match session {
         Some((sid, binding)) => (Some(sid), binding),
         None => (None, BindingKind::Unattributed),
     };
-    let snapshot = ContextSnapshot::new(
+    let snapshot = match ContextSnapshot::new(
         uuid::Uuid::new_v4(),
         SessionLink::new(sid, binding, None),
         now_epoch_ms(),
@@ -331,14 +356,23 @@ fn take_snapshot(
         window,
         composition,
         skeleton,
-    )
-    .ok()?;
+    ) {
+        Ok(s) => s,
+        Err(e) => return SnapshotOutcome::Failed(format!("快照构造失败: {e}")),
+    };
     let id = snapshot.snapshot_id;
     let model = snapshot.model.clone();
-    state
-        .chain
-        .append(InspectorRecord::Snapshot(snapshot))
-        .ok()?;
+    if let Err(e) = state.chain.append(InspectorRecord::Snapshot(snapshot)) {
+        return SnapshotOutcome::Failed(format!("链追加失败: {e}"));
+    }
+    // 原文旁挂（--store-content 隐私例外，§1 决策 9）：写失败=承诺破裂，必须可见
+    if let Some(dir) = state.content_dir() {
+        if let Err(e) = store_content_original(dir, id, kind, &extracted) {
+            return SnapshotOutcome::Failed(format!(
+                "原文旁挂写入失败（--store-content 承诺落原文，不可静默）: {e}"
+            ));
+        }
+    }
     if session.is_none() {
         state
             .unattributed
@@ -350,7 +384,36 @@ fn take_snapshot(
                 model,
             });
     }
-    Some(id)
+    SnapshotOutcome::Captured(id)
+}
+
+/// 原文旁挂：单条 JSONL（content.jsonl，snapshot_id 关联），单句柄写+sync。
+fn store_content_original(
+    dir: std::path::PathBuf,
+    id: uuid::Uuid,
+    kind: ProviderKind,
+    extracted: &crate::provider::ExtractedRequest,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let line = serde_json::json!({
+        "snapshot_id": id,
+        "taken_at_epoch_ms": now_epoch_ms(),
+        "provider": kind.as_str(),
+        "model": extracted.model,
+        "system": extracted.system,
+        "tools": extracted.tools.iter().map(|t| &t.definition).collect::<Vec<_>>(),
+        "messages": extracted.messages.iter().map(|m| serde_json::json!({
+            "role": m.role, "text": m.text, "media_count": m.media_count,
+        })).collect::<Vec<_>>(),
+    });
+    let path = dir.join("content.jsonl");
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    writeln!(f, "{}", serde_json::to_string(&line).unwrap_or_default())?;
+    f.flush()?;
+    f.sync_all()
 }
 
 /// 观测侧：非流式响应 → usage/finish → 入链。
@@ -439,9 +502,21 @@ pub async fn proxy_pass(
     }
 
     // 快照侧（请求发出前定格）
-    let snapshot_id = body_value
+    let snapshot_id = match body_value
         .as_ref()
-        .and_then(|v| take_snapshot(&state, session, kind, v));
+        .map(|v| take_snapshot(&state, session, kind, v))
+    {
+        Some(SnapshotOutcome::Captured(id)) => Some(id),
+        // 入链/旁挂失败 → 500 可见（R4 fail-fast，不静默吞掉观测承诺）
+        Some(SnapshotOutcome::Failed(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error": e}).to_string(),
+            )
+                .into_response();
+        }
+        _ => None,
+    };
 
     // 转发
     let base = upstream_base(&state.upstreams, kind).trim_end_matches('/');

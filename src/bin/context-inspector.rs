@@ -110,13 +110,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(InspectorLog::in_memory())
         }
     };
-    let _ = args.store_content; // 原文旁挂在 Phase 3 存储增量接线（本轮链与代理优先）
+    if args.store_content && args.inspector_log_dir.is_none() {
+        return Err(
+            "--store-content 需要 --inspector-log-dir（原文旁挂必须落盘，拒绝静默丢弃）".into(),
+        );
+    }
 
     let state = Arc::new(ProxyState::new(
         chain.clone(),
         args.upstreams.clone(),
         args.session_port_base,
     ));
+    if let Some(dir) = args
+        .store_content
+        .then(|| args.inspector_log_dir.clone())
+        .flatten()
+    {
+        state.set_content_dir(Some(dir.clone()));
+        eprintln!(
+            "[context-inspector] --store-content 已启用：原文旁挂 {}/content.jsonl（隐私例外模式）",
+            dir.display()
+        );
+    }
     // 验证上下文：锚点服务（data 目录就绪时）+ 对账路径（N 族链路 A 显式参数）
     if let Some(dir) = &args.inspector_log_dir {
         let anchors = AnchorService::load_or_create(dir, chain.clone(), args.anchor_every_n)?;
