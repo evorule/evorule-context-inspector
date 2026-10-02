@@ -15,9 +15,9 @@
 //! | `tokens` | token 估算（tiktoken 绑定，不自研分词）+ 图片 token 各家计法 | ✅ Phase 2 |
 //! | `provider` | LlmProvider trait + OpenAI / Anthropic / DeepSeek / Ollama 四实现 + StreamAggregator | ✅ Phase 2 |
 //! | `metrics` | 五维健康指标（压力 / cache / 漂移+三显式检测 / 截断 / 重复率），全万分比整数 | ✅ Phase 2-3 |
-//! | `chain` | InspectorLog：append / WAL 先写 / recover / verify_chain / anchor_head | ✅ Phase 3（库内核） |
-//! | `proxy` | 插件进程内 MITM 监听（SSE 零缓冲转发；19100 基址，loopback-only） | Phase 3（审批点 3 后） |
-//! | `api` | REST handlers（插件进程挂载；/admin/bindings 等） | Phase 3（审批点 3 后） |
+//! | `chain` | InspectorLog：append / WAL 先写 / recover / verify_chain / anchor_head | ✅ Phase 3 |
+//! | `proxy` | 插件进程内 MITM 监听（SSE 零缓冲转发；19100 基址，loopback-only） | ✅ Phase 3 |
+//! | `api` | REST handlers（admin 口挂载；/admin/bindings、查询面） | ✅ Phase 3（cli/锚点扩展下一增量） |
 //!
 //! ## 硬性纪律（红线摘要，全文见实施文档 §2）
 //!
@@ -31,11 +31,13 @@
 //!   禁自写 blake3，禁第二套链步实现。
 //! - **G5 代码质量**：0 panic / unwrap / expect（deny 级 lints，测试模块除外）。
 
+pub mod api;
 pub mod canonical;
 pub mod chain;
 pub mod metrics;
 pub mod model;
 pub mod provider;
+pub mod proxy;
 pub mod tokens;
 
 use uuid::Uuid;

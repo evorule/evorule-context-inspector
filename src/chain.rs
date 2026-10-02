@@ -42,13 +42,17 @@ pub enum InspectorRecord {
 }
 
 impl InspectorRecord {
-    /// 记录哈希（§5.2 append 第 1 步）：
-    /// Snapshot → **从存储骨架重算** `skeleton_hash`（强语义：诚实记录与
-    /// 构造时字段恒等；持久化骨架被篡改则重算必变，链验证识破——验收 #12）；
+    /// 记录哈希（§5.2 + v3.2 偏差③，项目方 2026-10-02 裁定「改」）：
+    /// Snapshot → **BLAKE3(canonical_json(全快照))**——链覆盖扩展到 composition/
+    /// model/session 等全部字段（原稿仅骨架，composition 篡改不破链的完整性
+    /// 缺口经审批收口）；`skeleton_hash` 字段保留，verify 线内另作强语义锚点
+    /// 校验（存储骨架重算 == 字段）。诚实记录的 canonical 哈希与追加时恒等。
     /// Observation → BLAKE3(canonical_json(observation)) 全量覆盖。
     pub fn record_hash(&self) -> Result<crate::HashHex, InspectorError> {
         match self {
-            InspectorRecord::Snapshot(s) => s.skeleton.skeleton_hash(),
+            InspectorRecord::Snapshot(s) => {
+                crate::canonical::canonical_json(s).map(|s| evorule_hash::digest(s.as_bytes()))
+            }
             InspectorRecord::Observation(o) => {
                 crate::canonical::canonical_json(o).map(|s| evorule_hash::digest(s.as_bytes()))
             }
@@ -73,7 +77,7 @@ impl InspectorRecord {
 }
 
 /// 链校验报告（§5.3）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChainReport {
     pub records: u64,
     pub ok: bool,
@@ -152,7 +156,20 @@ fn verify_line(
             ),
         });
     }
-    // 强语义：Snapshot 从存储骨架重算 skeleton_hash 比对（record_hash 内部实现）
+    // 强语义锚点：Snapshot 的 skeleton_hash 字段必须等于存储骨架重算值
+    if let InspectorRecord::Snapshot(s) = &wal_line.record {
+        let anchor = s.skeleton.skeleton_hash()?;
+        if anchor != s.skeleton_hash {
+            return Err(InspectorError::WalCorrupt {
+                seq,
+                reason: format!(
+                    "skeleton_hash 锚点不符：重算 {anchor} ≠ 字段 {}",
+                    s.skeleton_hash
+                ),
+            });
+        }
+    }
+    // 全覆盖记录哈希：从存储记录重算比对（composition/model 等一并入覆盖）
     let recomputed = wal_line.record.record_hash()?;
     if recomputed != wal_line.record_hash {
         return Err(InspectorError::WalCorrupt {
@@ -332,6 +349,25 @@ impl InspectorLog {
         Ok(self.inner.read().map_err(|_| poisoned())?.seq)
     }
 
+    /// 热窗口记录只读快照（查询面用；全量事实以 WAL 为准，§5.2）。
+    pub fn hot_records(&self) -> Result<Vec<(u64, InspectorRecord)>, InspectorError> {
+        let inner = self.inner.read().map_err(|_| poisoned())?;
+        Ok(inner
+            .hot
+            .iter()
+            .map(|e| (e.seq, e.record.clone()))
+            .collect())
+    }
+
+    /// 按 ID 查热窗口内快照。
+    pub fn snapshot_by_id(&self, id: Uuid) -> Result<Option<ContextSnapshot>, InspectorError> {
+        let inner = self.inner.read().map_err(|_| poisoned())?;
+        Ok(inner.hot.iter().find_map(|e| match &e.record {
+            InspectorRecord::Snapshot(s) if s.snapshot_id == id => Some(s.clone()),
+            _ => None,
+        }))
+    }
+
     /// 热窗口内某会话的快照 ID 列表（二级索引查询，§5.2）。
     pub fn snapshot_ids_of_session(&self, session: SessionId) -> Result<Vec<Uuid>, InspectorError> {
         let inner = self.inner.read().map_err(|_| poisoned())?;
@@ -421,8 +457,18 @@ pub fn verify_wal_file(path: impl AsRef<Path>) -> Result<ChainReport, InspectorE
                 seq,
                 reason: format!("JSON 解析失败: {e}"),
             })?;
-        verify_line(seq, &last, &wal_line)?;
-        last = wal_line.chain_hash;
+        last = match verify_line(seq, &last, &wal_line) {
+            Ok(ch) => ch,
+            // 校验失败 → 失败报告（定位序号）；Err 仅保留给 I/O 故障
+            Err(e) => {
+                return Ok(ChainReport {
+                    records: seq,
+                    ok: false,
+                    first_bad_seq: Some(seq),
+                    reason: Some(e.to_string()),
+                });
+            }
+        };
     }
     Ok(ChainReport {
         records: seq,
@@ -577,7 +623,11 @@ mod tests {
         let err = InspectorLog::recover(&path).unwrap_err();
         match err {
             InspectorError::WalCorrupt { seq: 1, reason } => {
-                assert!(reason.contains("记录哈希不符"), "reason={reason}");
+                // 锚点校验先命中（骨架伪造的第一道防线）；全量哈希随后兜底
+                assert!(
+                    reason.contains("skeleton_hash 锚点不符") || reason.contains("记录哈希不符"),
+                    "reason={reason}"
+                );
             }
             other => panic!("期望 WalCorrupt(seq=1)，实得 {other:?}"),
         }
@@ -637,25 +687,25 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_composition_outside_chain_scope_is_design_semantics() {
-        // 设计口径：Snapshot 的链哈希只覆盖骨架（skeleton_hash）；
-        // composition 被改而骨架不动 → 链验证仍过——这是 §5.2 的显式取舍，
-        // 已作为完整性观察项上报审批点 3（建议后续 record_hash 覆盖全快照）。
+    fn composition_tampering_breaks_chain_full_coverage() {
+        // v3.2 偏差③（项目方裁定「改」）：record_hash 覆盖全快照——
+        // composition 篡改即使骨架不动也必须破链（原稿缺口已收口）。
         let path = temp_wal("composition_scope");
         {
             let log = InspectorLog::open(&path).unwrap();
-            let mut s = snapshot(1, None, b"m");
-            s.composition.total_tokens += 1; // 恰好构造「非骨架字段被改」的持久化形态
-            log.append(InspectorRecord::Snapshot(s)).unwrap();
+            log.append(InspectorRecord::Snapshot(snapshot(1, None, b"m")))
+                .unwrap();
         }
-        // 构造等价文件：直接改 JSONL 里 composition 而不动骨架
+        // 直接改 JSONL 里 composition 而不动骨架
         let raw = std::fs::read_to_string(&path).unwrap();
         let v: serde_json::Value = serde_json::from_str(raw.trim()).unwrap();
         let mut tampered = v.clone();
         tampered["composition"]["total_tokens"] = serde_json::json!(999_999);
         std::fs::write(&path, serde_json::to_string(&tampered).unwrap() + "\n").unwrap();
         let report = verify_wal_file(&path).unwrap();
-        assert!(report.ok, "设计口径下 composition 不在链覆盖内（留痕用例）");
+        assert!(!report.ok, "全快照覆盖下 composition 篡改必须破链");
+        assert_eq!(report.first_bad_seq, Some(1));
+        // 双保险锚点仍在：骨架伪造由 skeleton_hash 锚点 + 全量哈希双重拦截
         let _ = std::fs::remove_file(&path);
     }
 
@@ -710,7 +760,7 @@ mod tests {
         let path = temp_wal("genesis");
         let log = InspectorLog::open(&path).unwrap();
         let s = snapshot(1, None, b"first");
-        let record_hash = s.skeleton_hash.clone();
+        let record_hash = InspectorRecord::Snapshot(s.clone()).record_hash().unwrap();
         log.append(InspectorRecord::Snapshot(s)).unwrap();
         let expected_head = evorule_reactor::chain_step(GENESIS, &record_hash);
         assert_eq!(

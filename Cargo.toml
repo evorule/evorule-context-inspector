@@ -25,6 +25,17 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tiktoken-rs = "0.12"
 # 截断标记可配正则（设计稿 §3.4 通用路径）。
 regex = "1"
+# 插件进程（Phase 3 接线）：MITM 监听 + REST
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
+tokio-stream = "0.1"
+axum = "0.8"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
+bytes = "1"
+
+[[bin]]
+name = "evorule-context-inspector"
+path = "src/bin/context-inspector.rs"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

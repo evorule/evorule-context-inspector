@@ -231,7 +231,7 @@ pub fn drift_band(drift_permyriad: u32) -> DriftBand {
 }
 
 /// 三个显式检测事件（独立于 drift_score，直接比对上一快照，§3.3）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ContextEvent {
     /// system_hash ≠（Critical）
     SystemPromptChanged,
