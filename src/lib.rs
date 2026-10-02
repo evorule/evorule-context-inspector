@@ -14,10 +14,10 @@
 //! | `canonical` | canonical JSON 封装：整数纪律、BTreeMap 键序、禁 preserve_order 守护 | ✅ Phase 1 |
 //! | `tokens` | token 估算（tiktoken 绑定，不自研分词）+ 图片 token 各家计法 | ✅ Phase 2 |
 //! | `provider` | LlmProvider trait + OpenAI / Anthropic / DeepSeek / Ollama 四实现 + StreamAggregator | ✅ Phase 2 |
-//! | `metrics` | 五维健康指标（压力 / cache / 漂移+三显式检测 / 截断 / 重复率），全万分比整数 | 🚧 Phase 2（重复率+截断）/ 3（其余） |
-//! | `chain` | InspectorLog：append / WAL / recover / verify_chain / anchor_head | Phase 3 |
-//! | `proxy` | 插件进程内 MITM 监听（SSE 零缓冲转发；19100 基址，loopback-only） | Phase 3 |
-//! | `api` | REST handlers（插件进程挂载；/admin/bindings 等） | Phase 3 |
+//! | `metrics` | 五维健康指标（压力 / cache / 漂移+三显式检测 / 截断 / 重复率），全万分比整数 | ✅ Phase 2-3 |
+//! | `chain` | InspectorLog：append / WAL 先写 / recover / verify_chain / anchor_head | ✅ Phase 3（库内核） |
+//! | `proxy` | 插件进程内 MITM 监听（SSE 零缓冲转发；19100 基址，loopback-only） | Phase 3（审批点 3 后） |
+//! | `api` | REST handlers（插件进程挂载；/admin/bindings 等） | Phase 3（审批点 3 后） |
 //!
 //! ## 硬性纪律（红线摘要，全文见实施文档 §2）
 //!
@@ -32,6 +32,7 @@
 //! - **G5 代码质量**：0 panic / unwrap / expect（deny 级 lints，测试模块除外）。
 
 pub mod canonical;
+pub mod chain;
 pub mod metrics;
 pub mod model;
 pub mod provider;
@@ -126,6 +127,10 @@ pub enum InspectorError {
     InconsistentField { field: &'static str },
     /// 输入非法（空字段 / 哈希格式不符等）。
     InvalidInput(String),
+    /// WAL / 文件 I/O 失败（write-ahead 失败 = 拒收且内存不变，R4）。
+    Io(String),
+    /// WAL 损坏或被篡改：fail-fast 拒载并定位记录序号（验收 #12）。
+    WalCorrupt { seq: u64, reason: String },
 }
 
 impl core::fmt::Display for InspectorError {
@@ -154,6 +159,10 @@ impl core::fmt::Display for InspectorError {
                 write!(f, "字段不一致：{field}")
             }
             InspectorError::InvalidInput(msg) => write!(f, "非法输入：{msg}"),
+            InspectorError::Io(msg) => write!(f, "WAL/文件 I/O 失败：{msg}"),
+            InspectorError::WalCorrupt { seq, reason } => {
+                write!(f, "WAL 损坏（记录序号 {seq}）：{reason}——fail-fast 拒载")
+            }
         }
     }
 }
@@ -215,6 +224,11 @@ mod type_tests {
             },
             InspectorError::InconsistentField { field: "model" },
             InspectorError::InvalidInput("bad".into()),
+            InspectorError::Io("wal gone".into()),
+            InspectorError::WalCorrupt {
+                seq: 7,
+                reason: "broken".into(),
+            },
         ];
         for e in errs {
             let msg = e.to_string();
