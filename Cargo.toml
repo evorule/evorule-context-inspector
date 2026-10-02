@@ -37,6 +37,10 @@ bytes = "1"
 name = "evorule-context-inspector"
 path = "src/bin/context-inspector.rs"
 
+[[bin]]
+name = "evorule-context-doctor"
+path = "src/bin/context-doctor.rs"
+
 [dev-dependencies]
 # 对账测试构造 Fact::Command 的 instruction（TCB JsonValue 构造 API）
 evorule-tcb = { path = "../evorule/evorule-tcb" }

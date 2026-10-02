@@ -35,6 +35,7 @@ pub mod anchor;
 pub mod api;
 pub mod canonical;
 pub mod chain;
+pub mod doctor;
 pub mod metrics;
 pub mod model;
 pub mod provider;
