@@ -78,7 +78,20 @@ pub struct FactFace {
     pub stable_entries: u64,
     /// IoRequest 条数
     pub io_requests: u64,
+    /// IoResponse 带真值 usage 的记录（provider 真值 token 对照）
+    pub usage_trues: Vec<UsageTruth>,
     pub total_facts: u64,
+}
+
+/// F-901 真值校准：provider 回报的真实 usage（对照 tiktoken 估算）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsageTruth {
+    /// prompt_tokens（provider 真值）
+    pub prompt_tokens: u64,
+    /// completion_tokens（provider 真值）
+    pub completion_tokens: u64,
+    /// tiktoken 对同内容的估算值（None = 无对应 wire 快照）
+    pub tokens_est: Option<u64>,
 }
 
 /// 一份 LLM 调用 wire（来自 fact 面）。
@@ -294,6 +307,25 @@ pub fn extract_fact_face(
                 }
             }
             evorule_reactor::Fact::IoRequest { .. } => face.io_requests += 1,
+            evorule_reactor::Fact::IoResponse { result, .. } => {
+                // F-901:provider usage 真值采集（对照 tiktoken 估算）
+                let v = evorule_reactor::tcb_to_serde(result);
+                let usage = v.get("usage");
+                if let (Some(pt), Some(ct)) = (
+                    usage
+                        .and_then(|u| u.get("prompt_tokens"))
+                        .and_then(|x| x.as_u64()),
+                    usage
+                        .and_then(|u| u.get("completion_tokens"))
+                        .and_then(|x| x.as_u64()),
+                ) {
+                    face.usage_trues.push(UsageTruth {
+                        prompt_tokens: pt,
+                        completion_tokens: ct,
+                        tokens_est: None,
+                    });
+                }
+            }
             evorule_reactor::Fact::Stable { .. } => face.stable_entries += 1,
             _ => {}
         }
