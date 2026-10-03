@@ -222,6 +222,18 @@ pub fn extract_constraints_heuristic(system: &str) -> ConstraintSource {
 
 // ---------- fact 面抽取 ----------
 
+/// 从 IoResponse 的 result JSON 中提取 provider usage 真值（F-901）。
+fn extract_usage_truth(v: &serde_json::Value) -> Option<UsageTruth> {
+    let usage = v.get("usage")?;
+    let pt = usage.get("prompt_tokens")?.as_u64()?;
+    let ct = usage.get("completion_tokens")?.as_u64()?;
+    Some(UsageTruth {
+        prompt_tokens: pt,
+        completion_tokens: ct,
+        tokens_est: None,
+    })
+}
+
 /// 从 session fact WAL 抽取事实面（只读；解析失败行计数跳过，报告如实）。
 pub fn extract_fact_face(
     wal: &Path,
@@ -310,20 +322,8 @@ pub fn extract_fact_face(
             evorule_reactor::Fact::IoResponse { result, .. } => {
                 // F-901:provider usage 真值采集（对照 tiktoken 估算）
                 let v = evorule_reactor::tcb_to_serde(result);
-                let usage = v.get("usage");
-                if let (Some(pt), Some(ct)) = (
-                    usage
-                        .and_then(|u| u.get("prompt_tokens"))
-                        .and_then(|x| x.as_u64()),
-                    usage
-                        .and_then(|u| u.get("completion_tokens"))
-                        .and_then(|x| x.as_u64()),
-                ) {
-                    face.usage_trues.push(UsageTruth {
-                        prompt_tokens: pt,
-                        completion_tokens: ct,
-                        tokens_est: None,
-                    });
+                if let Some(ut) = extract_usage_truth(&v) {
+                    face.usage_trues.push(ut);
                 }
             }
             evorule_reactor::Fact::Stable { .. } => face.stable_entries += 1,
