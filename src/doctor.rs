@@ -560,6 +560,67 @@ pub fn run_checks(
     out
 }
 
+/// F-901 真值偏差报告（对照 tiktoken 估算与 provider 真值 usage）。
+///
+/// 每轮：估算 prompt_tokens vs 真值 prompt_tokens，偏差万分比。
+/// 整体：均值偏差 + 最大偏差。偏差 >10%（1000‱）→ Warning。
+pub fn truth_calibration_report(
+    usage_trues: &[UsageTruth],
+    estimates: &[u64],
+) -> Vec<CheckFinding> {
+    let mut out = Vec::new();
+    let n = usage_trues.len().min(estimates.len());
+    if n == 0 {
+        out.push(CheckFinding {
+            checker: "f901_truth_calibration",
+            severity: Severity::Info,
+            message: "无真值/估算对照数据——F-901 校准暂不可验证".into(),
+        });
+        return out;
+    }
+    let mut total_dev = 0u64;
+    let mut max_dev = 0u64;
+    for i in 0..n {
+        let est = estimates[i];
+        let truth = usage_trues[i].prompt_tokens;
+        if truth == 0 {
+            continue;
+        }
+        let dev = est.abs_diff(truth) * 10_000 / truth;
+        total_dev += dev;
+        if dev > max_dev {
+            max_dev = dev;
+        }
+        if dev > 1_000 {
+            out.push(CheckFinding {
+                checker: "f901_truth_calibration",
+                severity: Severity::Warning,
+                message: format!(
+                    "第 {} 轮估算 {} vs 真值 {} 偏差 {}‱ > 10%",
+                    i + 1,
+                    est,
+                    truth,
+                    dev
+                ),
+            });
+        }
+    }
+    let avg = if n > 0 { total_dev / n as u64 } else { 0 };
+    out.push(CheckFinding {
+        checker: "f901_truth_calibration",
+        severity: if avg > 1_000 {
+            Severity::Warning
+        } else {
+            Severity::Info
+        },
+        message: format!(
+            "F-901 校准：{} 轮对照，平均偏差 {}‱，最大偏差 {}‱",
+            n, avg, max_dev
+        ),
+    });
+    out
+}
+
 /// 约束面检查（存在性/生存率 + I1 字面级对冲）。
 fn constraint_checks(
     messages: &[FaceMessage],
@@ -659,4 +720,61 @@ fn literal_negation(core: &str, content: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod f901_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    #[test]
+    fn truth_calibration_within_threshold_is_info() {
+        let truths = vec![
+            UsageTruth {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                tokens_est: None,
+            },
+            UsageTruth {
+                prompt_tokens: 200,
+                completion_tokens: 80,
+                tokens_est: None,
+            },
+        ];
+        let estimates = vec![105_u64, 190_u64];
+        let report = truth_calibration_report(&truths, &estimates);
+        assert!(
+            !report.iter().any(|c| c.severity == Severity::Warning),
+            "偏差 <10% 不应 Warning"
+        );
+    }
+
+    #[test]
+    fn truth_calibration_over_threshold_warns() {
+        let truths = vec![
+            UsageTruth {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                tokens_est: None,
+            },
+            UsageTruth {
+                prompt_tokens: 200,
+                completion_tokens: 80,
+                tokens_est: None,
+            },
+        ];
+        let estimates = vec![200_u64, 400_u64];
+        let report = truth_calibration_report(&truths, &estimates);
+        let warns: Vec<_> = report
+            .iter()
+            .filter(|c| c.severity == Severity::Warning)
+            .collect();
+        assert!(!warns.is_empty(), "偏差 >10% 应 Warning");
+    }
+
+    #[test]
+    fn truth_calibration_empty_is_info() {
+        let report = truth_calibration_report(&[], &[]);
+        assert!(report.iter().all(|c| c.severity == Severity::Info));
+    }
 }
