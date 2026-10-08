@@ -127,6 +127,9 @@ pub struct DiagnosisReport {
     pub checks: Vec<CheckFinding>,
     /// G-6 盲区量化：wire 观测轮次 - fact 可重建轮次（两 face 齐备时才有值）
     pub blind_spot_rounds: Option<u64>,
+    /// I2 冲突扫描面（F-905 doctor 整合；journal 未提供/无扫描事件 = None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub i2_face: Option<I2FaceSummary>,
     /// 时间窗/轮次能力声明（如实降级口径，与 reconcile 一致）
     pub notes: Vec<String>,
 }
@@ -232,6 +235,144 @@ fn extract_usage_truth(v: &serde_json::Value) -> Option<UsageTruth> {
         completion_tokens: ct,
         tokens_est: None,
     })
+}
+
+/// I2 冲突扫描面（doctor 整合，F-905 语义级收口）：
+/// 从 evo-agent journal（`data/sessions/{sid}.jsonl`）直读 `i2_scan_report`
+/// 事件——账本为权威源，doctor 零逻辑复制（不做本地重扫，只做投影聚合）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct I2FaceSummary {
+    /// 扫描事件数（每轮一条）
+    pub rounds_scanned: u64,
+    /// 候选冲突总数（历史累计）
+    pub total_conflicts: u64,
+    /// 语义裁决三态计数（verdict 落账后的分布）
+    pub contradictions: u64,
+    pub benign: u64,
+    pub uncertain: u64,
+    /// 未裁决候选数（语义级关闭/裁决缺省的候选）
+    pub unadjudicated: u64,
+    /// 最新一轮的冲突明细（token/分区/摘录/裁决）
+    pub latest_round_conflicts: Vec<serde_json::Value>,
+}
+
+/// 从 journal JSONL 提取 I2 面（容错解析：行/字段缺失即跳过，fail-soft）。
+pub fn extract_i2_face(journal: &Path) -> Result<Option<I2FaceSummary>, crate::InspectorError> {
+    use std::io::BufRead;
+    let file =
+        std::fs::File::open(journal).map_err(|e| crate::InspectorError::Io(e.to_string()))?;
+    let mut rounds = 0u64;
+    let mut total = 0u64;
+    let (mut contra, mut benign, mut uncertain, mut unadj) = (0u64, 0u64, 0u64, 0u64);
+    let mut latest: Vec<serde_json::Value> = Vec::new();
+    let mut latest_round: i64 = -1;
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line
+            .map_err(|e| crate::InspectorError::Io(e.to_string()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("i2_scan_report") {
+            continue;
+        }
+        rounds += 1;
+        let round = v
+            .get("payload")
+            .and_then(|p| p.get("round"))
+            .and_then(|r| r.as_i64())
+            .unwrap_or(-1);
+        let conflicts = v
+            .get("payload")
+            .and_then(|p| p.get("conflicts"))
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
+        total += conflicts.len() as u64;
+        if round > latest_round {
+            latest_round = round;
+            latest = conflicts.clone();
+        }
+        for c in &conflicts {
+            match c
+                .get("semantic_verdict")
+                .and_then(|sv| sv.get("verdict"))
+                .and_then(|x| x.as_str())
+            {
+                Some("contradiction") => contra += 1,
+                Some("benign") => benign += 1,
+                Some("uncertain") => uncertain += 1,
+                _ => unadj += 1,
+            }
+        }
+    }
+    if rounds == 0 {
+        return Ok(None);
+    }
+    Ok(Some(I2FaceSummary {
+        rounds_scanned: rounds,
+        total_conflicts: total,
+        contradictions: contra,
+        benign,
+        uncertain,
+        unadjudicated: unadj,
+        latest_round_conflicts: latest,
+    }))
+}
+
+/// I2 面检查发现投影（聚合面 → findings；裁决驱动的分级）：
+/// contradiction=Warning（真矛盾未处理）；benign=Info（已裁良性留痕）；
+/// unadjudicated=Warning（候选未裁决——语义级关闭或裁决缺省）。
+pub fn i2_findings(face: &I2FaceSummary) -> Vec<CheckFinding> {
+    let mut out = Vec::new();
+    out.push(CheckFinding {
+        checker: "i2_face",
+        severity: Severity::Info,
+        message: format!(
+            "I2 扫描 {} 轮/{} 候选：真矛盾 {}、良性 {}、未裁 {}、未裁决候选 {}",
+            face.rounds_scanned,
+            face.total_conflicts,
+            face.contradictions,
+            face.benign,
+            face.uncertain,
+            face.unadjudicated
+        ),
+    });
+    for c in &face.latest_round_conflicts {
+        let token = c
+            .get("token")
+            .and_then(|t| t.as_str())
+            .unwrap_or("?")
+            .to_string();
+        let verdict = c
+            .get("semantic_verdict")
+            .and_then(|sv| sv.get("verdict"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("unadjudicated");
+        let rationale = c
+            .get("semantic_verdict")
+            .and_then(|sv| sv.get("rationale"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        let (severity, label) = match verdict {
+            "contradiction" => (Severity::Warning, "真矛盾"),
+            "benign" => (Severity::Info, "良性"),
+            _ => (Severity::Warning, "未裁决候选"),
+        };
+        out.push(CheckFinding {
+            checker: "i2_semantic",
+            severity,
+            message: format!(
+                "token {token}: {label}{}{}",
+                if rationale.is_empty() { "" } else { " — " },
+                rationale
+            ),
+        });
+    }
+    out
 }
 
 /// 从 session fact WAL 抽取事实面（只读；解析失败行计数跳过，报告如实）。
@@ -778,3 +919,68 @@ mod f901_tests {
         assert!(report.iter().all(|c| c.severity == Severity::Info));
     }
 }
+    // ===== I2 面 doctor 整合（F-905 语义级收口） =====
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn extract_i2_face_parses_verdicts_and_counts() {
+        let dir = std::env::temp_dir().join(format!("i2f-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("s1.jsonl");
+        let line1 = r#"{"seq":1,"ts":1,"type":"turn_started","payload":{}}"#;
+        let line2 = r#"{"seq":2,"ts":2,"type":"i2_scan_report","payload":{"round":3,"conflicts":[{"kind":"deny_vs_capability","token":"web_search","section_a":"a","section_b":"b","excerpt_a":"x","excerpt_b":"y","semantic_verdict":{"verdict":"contradiction","rationale":"真矛盾"}},{"kind":"deny_vs_capability","token":"git_push","section_a":"a","section_b":"b","excerpt_a":"x","excerpt_b":"y","note":""}]}}"#;
+        let line3 = r#"{"seq":3,"ts":3,"type":"tool_result","payload":{}}"#;
+        std::fs::write(&p, format!("{line1}\n{line2}\n{line3}\n")).unwrap();
+        let face = extract_i2_face(&p).unwrap().expect("有扫描事件");
+        assert_eq!(face.rounds_scanned, 1);
+        assert_eq!(face.total_conflicts, 2);
+        assert_eq!(face.contradictions, 1);
+        assert_eq!(face.unadjudicated, 1);
+        assert_eq!(face.latest_round_conflicts.len(), 2);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn extract_i2_face_empty_and_missing() {
+        // 无扫描事件 → None;journal 不存在 → Err
+        let dir = std::env::temp_dir().join(format!("i2x-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("empty.jsonl");
+        std::fs::write(&p, "").unwrap();
+        assert!(extract_i2_face(&p).unwrap().is_none());
+        assert!(extract_i2_face(&dir.join("nope.jsonl")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
+    fn i2_findings_severity_mapping() {
+        let face = I2FaceSummary {
+            rounds_scanned: 2,
+            total_conflicts: 3,
+            contradictions: 1,
+            benign: 1,
+            uncertain: 0,
+            unadjudicated: 1,
+            latest_round_conflicts: vec![
+                serde_json::json!({"token":"a","semantic_verdict":{"verdict":"contradiction","rationale":"r1"}}),
+                serde_json::json!({"token":"b","semantic_verdict":{"verdict":"benign","rationale":"r2"}}),
+                serde_json::json!({"token":"c"}),
+            ],
+        };
+        let findings = i2_findings(&face);
+        // 聚合行 + 3 明细行
+        assert_eq!(findings.len(), 4);
+        assert!(findings[0].message.contains("I2 扫描 2 轮/3 候选"));
+        let by_sev: Vec<_> = findings[1..]
+            .iter()
+            .map(|f| (f.severity, f.message.clone()))
+            .collect();
+        assert_eq!(by_sev[0].0, Severity::Warning, "真矛盾=Warning");
+        assert!(by_sev[0].1.contains("真矛盾") && by_sev[0].1.contains("r1"));
+        assert_eq!(by_sev[1].0, Severity::Info, "良性=Info");
+        assert_eq!(by_sev[2].0, Severity::Warning, "未裁决候选=Warning");
+    }
+

@@ -20,6 +20,8 @@ struct CliArgs {
     fact_wal: PathBuf,
     wire_wal: Option<PathBuf>,
     constraints: Option<PathBuf>,
+    /// evo-agent journal（data/sessions/{sid}.jsonl；提供时投影 I2 冲突扫描面）
+    journal: Option<PathBuf>,
     json: bool,
 }
 
@@ -28,6 +30,7 @@ fn parse_args() -> Result<CliArgs, String> {
         fact_wal: PathBuf::new(),
         wire_wal: None,
         constraints: None,
+        journal: None,
         json: false,
     };
     let mut it = std::env::args().skip(1);
@@ -39,6 +42,9 @@ fn parse_args() -> Result<CliArgs, String> {
             }
             "--constraints" => {
                 args.constraints = Some(PathBuf::from(it.next().ok_or("--constraints 缺值")?))
+            }
+            "--journal" => {
+                args.journal = Some(PathBuf::from(it.next().ok_or("--journal 缺值")?))
             }
             "--json" => args.json = true,
             other => return Err(format!("未知参数 {other}")),
@@ -104,12 +110,21 @@ fn run(args: &CliArgs) -> Result<evorule_llm_context_inspector::doctor::Diagnosi
     let attribution = attribute(&latest.messages, latest.tools, |text| {
         evorule_llm_context_inspector::tokens::estimate_text(&model, text).unwrap_or(0)
     });
-    let checks = run_checks(
+    let mut checks = run_checks(
         &latest.messages,
         &attribution,
         &constraints,
         &face.rolling_summaries,
     );
+    // F-905 doctor 整合：journal 提供 → I2 冲突扫描面投影 + 裁决驱动 findings
+    let i2_face = match &args.journal {
+        Some(p) => evorule_llm_context_inspector::doctor::extract_i2_face(p)
+            .map_err(|e| e.to_string())?,
+        None => None,
+    };
+    if let Some(face) = &i2_face {
+        checks.extend(evorule_llm_context_inspector::doctor::i2_findings(face));
+    }
 
     let blind_spot = wire_face
         .as_ref()
@@ -141,6 +156,7 @@ fn run(args: &CliArgs) -> Result<evorule_llm_context_inspector::doctor::Diagnosi
             .collect(),
         checks,
         blind_spot_rounds: blind_spot,
+        i2_face,
         notes: vec![
             "wire 面为旁路观测（inspector MITM），非 RL-A2 记账权威；记账面收敛（回喂轮 wire 落链）为 evo-agent 侧独立议题".into(),
             "token 为 tiktoken 近似口径（ProviderReported 哲学同源）".into(),
@@ -168,6 +184,26 @@ fn print_text(report: &evorule_llm_context_inspector::doctor::DiagnosisReport) {
     println!("--- 八层归因（最新 wire） ---");
     for a in &report.attribution {
         println!("  {:<22} tokens≈{}", a.layer, a.tokens_est);
+    }
+    if let Some(i2) = &report.i2_face {
+        println!(
+            "--- I2 冲突扫描面: {} 轮/{} 候选 (真矛盾 {} | 良性 {} | 未裁 {} | 未裁决候选 {}) ---",
+            i2.rounds_scanned,
+            i2.total_conflicts,
+            i2.contradictions,
+            i2.benign,
+            i2.uncertain,
+            i2.unadjudicated
+        );
+        for c in &i2.latest_round_conflicts {
+            let token = c.get("token").and_then(|t| t.as_str()).unwrap_or("?");
+            let verdict = c
+                .get("semantic_verdict")
+                .and_then(|sv| sv.get("verdict"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("未裁决");
+            println!("  [{verdict}] {token}");
+        }
     }
     println!("--- 检查发现（{} 条） ---", report.checks.len());
     for c in &report.checks {
