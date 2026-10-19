@@ -267,8 +267,7 @@ pub fn extract_i2_face(journal: &Path) -> Result<Option<I2FaceSummary>, crate::I
     let mut latest: Vec<serde_json::Value> = Vec::new();
     let mut latest_round: i64 = -1;
     for line in std::io::BufReader::new(file).lines() {
-        let line = line
-            .map_err(|e| crate::InspectorError::Io(e.to_string()))?;
+        let line = line.map_err(|e| crate::InspectorError::Io(e.to_string()))?;
         if line.trim().is_empty() {
             continue;
         }
@@ -919,68 +918,67 @@ mod f901_tests {
         assert!(report.iter().all(|c| c.severity == Severity::Info));
     }
 }
-    // ===== I2 面 doctor 整合（F-905 语义级收口） =====
+// ===== I2 面 doctor 整合（F-905 语义级收口） =====
 
-    #[test]
-    #[allow(clippy::unwrap_used, clippy::expect_used)]
-    fn extract_i2_face_parses_verdicts_and_counts() {
-        let dir = std::env::temp_dir().join(format!("i2f-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("s1.jsonl");
-        let line1 = r#"{"seq":1,"ts":1,"type":"turn_started","payload":{}}"#;
-        let line2 = r#"{"seq":2,"ts":2,"type":"i2_scan_report","payload":{"round":3,"conflicts":[{"kind":"deny_vs_capability","token":"web_search","section_a":"a","section_b":"b","excerpt_a":"x","excerpt_b":"y","semantic_verdict":{"verdict":"contradiction","rationale":"真矛盾"}},{"kind":"deny_vs_capability","token":"git_push","section_a":"a","section_b":"b","excerpt_a":"x","excerpt_b":"y","note":""}]}}"#;
-        let line3 = r#"{"seq":3,"ts":3,"type":"tool_result","payload":{}}"#;
-        std::fs::write(&p, format!("{line1}\n{line2}\n{line3}\n")).unwrap();
-        let face = extract_i2_face(&p).unwrap().expect("有扫描事件");
-        assert_eq!(face.rounds_scanned, 1);
-        assert_eq!(face.total_conflicts, 2);
-        assert_eq!(face.contradictions, 1);
-        assert_eq!(face.unadjudicated, 1);
-        assert_eq!(face.latest_round_conflicts.len(), 2);
-    }
+#[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn extract_i2_face_parses_verdicts_and_counts() {
+    let dir = std::env::temp_dir().join(format!("i2f-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("s1.jsonl");
+    let line1 = r#"{"seq":1,"ts":1,"type":"turn_started","payload":{}}"#;
+    let line2 = r#"{"seq":2,"ts":2,"type":"i2_scan_report","payload":{"round":3,"conflicts":[{"kind":"deny_vs_capability","token":"web_search","section_a":"a","section_b":"b","excerpt_a":"x","excerpt_b":"y","semantic_verdict":{"verdict":"contradiction","rationale":"真矛盾"}},{"kind":"deny_vs_capability","token":"git_push","section_a":"a","section_b":"b","excerpt_a":"x","excerpt_b":"y","note":""}]}}"#;
+    let line3 = r#"{"seq":3,"ts":3,"type":"tool_result","payload":{}}"#;
+    std::fs::write(&p, format!("{line1}\n{line2}\n{line3}\n")).unwrap();
+    let face = extract_i2_face(&p).unwrap().expect("有扫描事件");
+    assert_eq!(face.rounds_scanned, 1);
+    assert_eq!(face.total_conflicts, 2);
+    assert_eq!(face.contradictions, 1);
+    assert_eq!(face.unadjudicated, 1);
+    assert_eq!(face.latest_round_conflicts.len(), 2);
+}
 
-    #[test]
-    #[allow(clippy::unwrap_used, clippy::expect_used)]
-    fn extract_i2_face_empty_and_missing() {
-        // 无扫描事件 → None;journal 不存在 → Err
-        let dir = std::env::temp_dir().join(format!("i2x-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("empty.jsonl");
-        std::fs::write(&p, "").unwrap();
-        assert!(extract_i2_face(&p).unwrap().is_none());
-        assert!(extract_i2_face(&dir.join("nope.jsonl")).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+#[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn extract_i2_face_empty_and_missing() {
+    // 无扫描事件 → None;journal 不存在 → Err
+    let dir = std::env::temp_dir().join(format!("i2x-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("empty.jsonl");
+    std::fs::write(&p, "").unwrap();
+    assert!(extract_i2_face(&p).unwrap().is_none());
+    assert!(extract_i2_face(&dir.join("nope.jsonl")).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    #[test]
-    #[allow(clippy::unwrap_used, clippy::expect_used)]
-    fn i2_findings_severity_mapping() {
-        let face = I2FaceSummary {
-            rounds_scanned: 2,
-            total_conflicts: 3,
-            contradictions: 1,
-            benign: 1,
-            uncertain: 0,
-            unadjudicated: 1,
-            latest_round_conflicts: vec![
-                serde_json::json!({"token":"a","semantic_verdict":{"verdict":"contradiction","rationale":"r1"}}),
-                serde_json::json!({"token":"b","semantic_verdict":{"verdict":"benign","rationale":"r2"}}),
-                serde_json::json!({"token":"c"}),
-            ],
-        };
-        let findings = i2_findings(&face);
-        // 聚合行 + 3 明细行
-        assert_eq!(findings.len(), 4);
-        assert!(findings[0].message.contains("I2 扫描 2 轮/3 候选"));
-        let by_sev: Vec<_> = findings[1..]
-            .iter()
-            .map(|f| (f.severity, f.message.clone()))
-            .collect();
-        assert_eq!(by_sev[0].0, Severity::Warning, "真矛盾=Warning");
-        assert!(by_sev[0].1.contains("真矛盾") && by_sev[0].1.contains("r1"));
-        assert_eq!(by_sev[1].0, Severity::Info, "良性=Info");
-        assert_eq!(by_sev[2].0, Severity::Warning, "未裁决候选=Warning");
-    }
-
+#[test]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+fn i2_findings_severity_mapping() {
+    let face = I2FaceSummary {
+        rounds_scanned: 2,
+        total_conflicts: 3,
+        contradictions: 1,
+        benign: 1,
+        uncertain: 0,
+        unadjudicated: 1,
+        latest_round_conflicts: vec![
+            serde_json::json!({"token":"a","semantic_verdict":{"verdict":"contradiction","rationale":"r1"}}),
+            serde_json::json!({"token":"b","semantic_verdict":{"verdict":"benign","rationale":"r2"}}),
+            serde_json::json!({"token":"c"}),
+        ],
+    };
+    let findings = i2_findings(&face);
+    // 聚合行 + 3 明细行
+    assert_eq!(findings.len(), 4);
+    assert!(findings[0].message.contains("I2 扫描 2 轮/3 候选"));
+    let by_sev: Vec<_> = findings[1..]
+        .iter()
+        .map(|f| (f.severity, f.message.clone()))
+        .collect();
+    assert_eq!(by_sev[0].0, Severity::Warning, "真矛盾=Warning");
+    assert!(by_sev[0].1.contains("真矛盾") && by_sev[0].1.contains("r1"));
+    assert_eq!(by_sev[1].0, Severity::Info, "良性=Info");
+    assert_eq!(by_sev[2].0, Severity::Warning, "未裁决候选=Warning");
+}

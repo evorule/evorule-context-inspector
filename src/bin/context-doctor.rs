@@ -43,9 +43,7 @@ fn parse_args() -> Result<CliArgs, String> {
             "--constraints" => {
                 args.constraints = Some(PathBuf::from(it.next().ok_or("--constraints 缺值")?))
             }
-            "--journal" => {
-                args.journal = Some(PathBuf::from(it.next().ok_or("--journal 缺值")?))
-            }
+            "--journal" => args.journal = Some(PathBuf::from(it.next().ok_or("--journal 缺值")?)),
             "--json" => args.json = true,
             other => return Err(format!("未知参数 {other}")),
         }
@@ -118,8 +116,9 @@ fn run(args: &CliArgs) -> Result<evorule_llm_context_inspector::doctor::Diagnosi
     );
     // F-905 doctor 整合：journal 提供 → I2 冲突扫描面投影 + 裁决驱动 findings
     let i2_face = match &args.journal {
-        Some(p) => evorule_llm_context_inspector::doctor::extract_i2_face(p)
-            .map_err(|e| e.to_string())?,
+        Some(p) => {
+            evorule_llm_context_inspector::doctor::extract_i2_face(p).map_err(|e| e.to_string())?
+        }
         None => None,
     };
     if let Some(face) = &i2_face {
