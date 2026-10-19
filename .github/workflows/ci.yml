@@ -12,28 +12,34 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# 布局约定：本仓与兄弟仓(path 依赖 ../evorule、../evorule-hash)统一检出为
+# GITHUB_WORKSPACE 下的子目录，使 Cargo.toml 的 ../ 解析与兄弟布局同构——
+# 本仓若用默认检出（workspace 根），../evorule 会解析到 workspace 外一级，
+# 与 checkout 的 path: evorule 错位一层（历史 CI 红根因）。
 jobs:
   lint:
     name: Clippy + fmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: evorule-context-inspector
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: evorule-context-inspector
 
-      # 本仓 path 依赖 ../evorule/evorule-reactor(工作区外),CI checkout 需同构布局;
-      # 推远端后在镜像仓以 submodule/actions 复现该布局(审批点 1 后补 CI 布局说明)。
+      # 本仓 path 依赖 ../evorule/evorule-reactor 等(工作区外),CI checkout 需同构布局
       - name: Checkout sibling evorule workspace
         uses: actions/checkout@v4
         with:
           repository: evorule/evorule
           ref: main
           path: evorule
-        continue-on-error: true
 
       - name: Checkout sibling evorule-hash
         uses: actions/checkout@v4
@@ -41,12 +47,13 @@ jobs:
           repository: evorule/evorule-hash
           ref: main
           path: evorule-hash
-        continue-on-error: true
 
       - name: cargo fmt --check
+        working-directory: evorule-context-inspector
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
+        working-directory: evorule-context-inspector
         run: cargo clippy --all-targets -- -D warnings
 
   test:
@@ -55,10 +62,14 @@ jobs:
     needs: [lint]
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: evorule-context-inspector
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: evorule-context-inspector
 
       - name: Checkout sibling evorule workspace
         uses: actions/checkout@v4
@@ -66,7 +77,6 @@ jobs:
           repository: evorule/evorule
           ref: main
           path: evorule
-        continue-on-error: true
 
       - name: Checkout sibling evorule-hash
         uses: actions/checkout@v4
@@ -74,9 +84,9 @@ jobs:
           repository: evorule/evorule-hash
           ref: main
           path: evorule-hash
-        continue-on-error: true
 
       - name: cargo test
+        working-directory: evorule-context-inspector
         run: cargo test
 
   coverage:
@@ -85,6 +95,8 @@ jobs:
     needs: [test]
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: evorule-context-inspector
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -94,7 +106,6 @@ jobs:
           repository: evorule/evorule
           ref: main
           path: evorule
-        continue-on-error: true
 
       - name: Checkout sibling evorule-hash
         uses: actions/checkout@v4
@@ -102,10 +113,10 @@ jobs:
           repository: evorule/evorule-hash
           ref: main
           path: evorule-hash
-        continue-on-error: true
 
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin --locked
 
       - name: Run tarpaulin
+        working-directory: evorule-context-inspector
         run: cargo tarpaulin --skip-clean --out Xml --timeout 600
