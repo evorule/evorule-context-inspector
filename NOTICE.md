@@ -34,11 +34,38 @@
 
 > 完整决策指引见 [DUAL_LICENSE.md](DUAL_LICENSE.md)。
 
-## 依赖协议说明
+## 协议分离
 
-- 本仓为实现层软件，整体 **AGPL-3.0-or-later**（依据 DEC-2026-001 D-001-09 统一裁定）。
-- 上游依赖 `evorule-hash`（AGPL-3.0-or-later）与 `evorule-reactor`（AGPL-3.0-or-later），
-  许可同源，无协议冲突项。
+| 资产 | 协议 | 说明 |
+|---|---|---|
+| **代码** | AGPL-3.0-or-later | 详见 [LICENSE](LICENSE) |
+| **`core_eval.json`** | **CC0 1.0 公共领域** | EvoRule 宪法（解释器规范）—— 任何人都可以自由实现兼容的 EvoRule 引擎，无需保留版权声明。官方文本：<https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt> ；仓内副本：[LICENSES/core_eval-CC0-1.0.txt](LICENSES/core_eval-CC0-1.0.txt) |
+
+**协议分离的战略意义**：
+
+- 代码（copyleft, AGPL-3.0）：保护 EvoRule 当前实现，阻止大厂"白嫖 fork 后卖闭源 SaaS"
+- 宪法（public domain, CC0-1.0）：鼓励广泛采用，任何人都可以基于宪法实现兼容引擎
+- 这把"标准"和"实现"分开，类似 HTTP 规范（W3C 公共）vs Apache HTTP Server（版权）
+- 社区贡献物可经**通道 D（Contribution Grant, CONTRIBUTION_GRANT.md）**以 Apache-2.0 局部再授权进入开源社区/学术仓；主仓 AGPL 主线不变；签发记录见 docs/grants/
+
+## 第三方组件声明
+
+本项目依赖的第三方组件（crates.io / npm 等）以其自身许可授权，义务边界与逐项清单见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)，许可证正文逐字归档于 [LICENSES/third-party/](LICENSES/third-party/)。分发本项目的任何产物时，须随附该声明与对应许可证正文（随附规范见 [SOURCE.md](SOURCE.md)）。
+
+## 源码提供（AGPL §13）
+
+以网络服务形式交付本软件者，须向其用户提供对应源码。源码定位与完整性校验入口：[SOURCE.md](SOURCE.md)。
+
+## 设计原则
+
+EvoRule 的核心设计原则：
+
+- 规则即数据（可读、可审计、可序列化）
+- 自解释引擎（解释器本身也是可被审计的规则）
+- 完全可追溯（每次状态变化留下因果链）
+- 零隐藏逻辑（解释器可读 + 可审计）
+- 不可变状态（基于不可变数据结构）
+- 确定性执行（相同输入 = 永远相同输出）
 
 ## 联系信息
 
@@ -46,3 +73,4 @@
 - **作者**: EvoRule Project
 - **邮箱**: <evorulelab@gmail.com>
 - **组织**: [EvoRule](https://gitee.com/evorule)
+- **Gitee**: <https://gitee.com/evorule/evorule-context-inspector>
