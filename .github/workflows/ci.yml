@@ -126,5 +126,9 @@ jobs:
     name: license gate
     permissions:
       contents: read
-    uses: evorule/evorule/.github/workflows/license-gate.yml@9d0e4fdbb28cfd0db1051c9014149f198b290e6b
+    uses: evorule/evorule/.github/workflows/license-gate.yml@0e89cfafc0610b3238b200f8862631fe463d6ac5
+    with:
+      # 本仓 Cargo.toml 以 path 依赖引用兄弟仓（../evorule/evorule-reactor 等），
+      # cargo-deny 在 CI 沙箱解析依赖图需同级检出：根仓工作区 + evorule-hash
+      extra-checkouts: 'evorule@0e89cfafc0610b3238b200f8862631fe463d6ac5 evorule-hash@c842ecbc281fe05144b0a6630397a2cd45ce6f8e'
 
