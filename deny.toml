@@ -60,17 +60,18 @@ confidence-threshold = 0.93
 [advisories]
 version = 2
 yanked = "warn"
-# bare-metal 已弃用归档（RUSTSEC-2026-0110，unmaintained 类）：cortex-m 0.7 生态
-# 传递依赖，无安全升级路径（官方迁移指引 critical-section 属 cortex-m 大版本
-# 迁移范畴）；当前仅 evorule-mcu 仿真固件 dev/示例链引入，非生产服务面，豁免。
-ignore = ["RUSTSEC-2026-0110"]
+# （2026-10-28 顺手摘除已失效的 RUSTSEC-2026-0110 豁免：advisory DB 中已无匹配；
+#   该 advisory 的实际 package 是 bare-metal，本仓依赖树不含 bare-metal/cortex-m。）
 
 # ---------------------------------------------------------------------------
 # 依赖关系: 重复版本警告；通配符依赖拒绝
 # ---------------------------------------------------------------------------
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+# 本仓以 path 依赖（无 version）引用 evorule 生态同仓 crate（evorule-reactor /
+# evorule-hash / evorule-governance / evorule-tcb），属标准 workspace 形态——
+# 降为 warn 保留信号不阻塞
+wildcards = "warn"
 
 # ---------------------------------------------------------------------------
 # 来源: 仅允许 crates.io
