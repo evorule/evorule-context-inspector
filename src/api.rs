@@ -243,6 +243,7 @@ mod services_tests {
             live, declared,
             "SERVICE_NAMES 与 plugin.json 声明漂移——新增/删除服务须两处同步"
         );
+        Ok(())
     }
 
     /// /services 响应形态与 server fetch_host_services 的解析契约一致
