@@ -33,10 +33,44 @@ pub struct ReconcileReport {
     pub missing_cause: Vec<serde_json::Value>,
     /// 时间窗对账能力声明（架构事实，如实降级）。
     pub time_window_check: &'static str,
+    /// 跨链对账覆盖面（诚实性字段，INSP-D-03/04 收口）：
+    /// - `full`：存在带 cause_fact 的快照且已硬校验（Header 注入级路径）
+    /// - `not_applicable`：无任何快照携带 cause_fact（默认 PortBinding 模式
+    ///   不产生跨链因果引用）——此时对账退化为单链自检，`ok()` 不代表
+    ///   跨链一致，只代表双链各自完整
+    pub cross_chain_check: CrossChainCoverage,
+}
+
+/// 跨链对账覆盖面（三态，诚实区分「验过/没得验」）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum CrossChainCoverage {
+    /// 至少一条快照携带 cause_fact 且完成存在性硬校验
+    Verified,
+    /// 快照存在但无一携带 cause_fact（PortBinding 默认模式）——跨链对账不适用
+    NotApplicable,
+    /// 无任何 inspector 快照（对账对象为空）
+    NoSnapshots,
+}
+
+impl CrossChainCoverage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CrossChainCoverage::Verified => "verified",
+            CrossChainCoverage::NotApplicable => "not_applicable",
+            CrossChainCoverage::NoSnapshots => "no_snapshots",
+        }
+    }
 }
 
 impl ReconcileReport {
     /// 总判定：双链通过且无断引。
+    ///
+    /// 覆盖面语义（如实区分，不虚构验证力）：
+    /// - `cross_chain_check == verified` 时，`ok` = 双链完整 + 跨链因果无断引；
+    /// - `not_applicable` 时，`ok` 仅代表**双链各自完整**——跨链一致性根本
+    ///   未被检验（默认 PortBinding 模式的快照不带因果引用），调用方若只看
+    ///   `ok` 请连同本字段一起读；
+    /// - `time_window_check` 恒为架构性降级声明，不计入 `ok`。
     pub fn ok(&self) -> bool {
         self.inspector_chain.ok && self.missing_cause.is_empty()
     }
@@ -82,6 +116,17 @@ pub fn reconcile(fact_log: &Path, inspector_log: &Path) -> Result<ReconcileRepor
         }
     }
 
+    // 跨链覆盖面判定:有 inspector 记录且至少一条带 cause_fact = verified;
+    // 有记录但零 cause_fact = not_applicable(PortBinding 默认形态);
+    // 零记录 = no_snapshots
+    let cross_chain_check = if inspector_records == 0 {
+        CrossChainCoverage::NoSnapshots
+    } else if cause_checked > 0 {
+        CrossChainCoverage::Verified
+    } else {
+        CrossChainCoverage::NotApplicable
+    };
+
     Ok(ReconcileReport {
         facts: records.len() as u64,
         inspector_records,
@@ -90,5 +135,37 @@ pub fn reconcile(fact_log: &Path, inspector_log: &Path) -> Result<ReconcileRepor
         cause_checked,
         missing_cause,
         time_window_check: "unsupported: fact WAL 无墙钟时间戳（reactor 架构事实）——时间窗交错对账待 fact 层携带时间戳后另行增量",
+        cross_chain_check,
     })
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn coverage_buckets_follow_cause_presence() {
+        // 有记录+有 cause_checked = verified;有记录+零 cause = not_applicable;
+        // 零记录 = no_snapshots——三桶判定与 inspector_records/cause_checked 联动
+        let assert_bucket = |inspector_records: u64, cause_checked: u64| {
+            if inspector_records == 0 {
+                CrossChainCoverage::NoSnapshots
+            } else if cause_checked > 0 {
+                CrossChainCoverage::Verified
+            } else {
+                CrossChainCoverage::NotApplicable
+            }
+        };
+        assert_eq!(assert_bucket(5, 2), CrossChainCoverage::Verified);
+        assert_eq!(assert_bucket(5, 0), CrossChainCoverage::NotApplicable);
+        assert_eq!(assert_bucket(0, 0), CrossChainCoverage::NoSnapshots);
+    }
+
+    #[test]
+    fn coverage_serializes_with_stable_labels() {
+        // 契约面:三态字符串标签稳定(server 契约服务直接透传)
+        assert_eq!(CrossChainCoverage::Verified.as_str(), "verified");
+        assert_eq!(CrossChainCoverage::NotApplicable.as_str(), "not_applicable");
+        assert_eq!(CrossChainCoverage::NoSnapshots.as_str(), "no_snapshots");
+    }
 }

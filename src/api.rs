@@ -13,6 +13,15 @@ use axum::{Json, Router};
 use std::sync::Arc;
 
 /// 查询路由（无 own state——由 admin_router 统一 with_state）。
+/// 实载服务清单（单一事实源）：server 侧 `auto_discover` 经 `GET /services`
+/// 拉取本清单装配路由；`plugin.json` 的 services 声明须与本表人工保持一致
+/// （声明是装载回退，本表是身份事实源——server 侧口径）。
+pub const SERVICE_NAMES: [&str; 3] = [
+    "context_session_health",
+    "context_verify_chain",
+    "context_reconcile",
+];
+
 pub fn query_router() -> Router<Arc<ProxyState>> {
     Router::new()
         .route("/api/context/verify", get(verify))
@@ -22,12 +31,19 @@ pub fn query_router() -> Router<Arc<ProxyState>> {
             get(session_snapshots),
         )
         .route("/api/sessions/{id}/context/health", get(session_health))
+        .route("/services", get(services))
         .route(
             "/services/context_session_health",
             post(service_session_health),
         )
         .route("/services/context_verify_chain", post(service_verify_chain))
         .route("/services/context_reconcile", post(service_reconcile))
+}
+
+/// `GET /services`：实载服务清单（server `auto_discover` 装载路径的数据源；
+/// 形态契约 `{"services":[名字...]}` 与 wasm-host 同款）
+async fn services() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "services": SERVICE_NAMES }))
 }
 
 fn chain_of(state: &Arc<ProxyState>) -> Arc<InspectorLog> {
@@ -203,4 +219,44 @@ async fn session_health(
         "events": events.unwrap_or_default(),
     }))
     .into_response()
+}
+
+#[cfg(test)]
+mod services_tests {
+    use super::*;
+
+    /// 实载清单与 plugin.json 的 services 声明一致（双源防漂移:
+    /// server 侧口径=本清单为身份事实源,声明仅为装载回退）
+    #[test]
+    fn service_names_match_plugin_json_declaration() {
+        let raw = include_str!("../plugin.json");
+        let v: serde_json::Value = serde_json::from_str(raw).expect("plugin.json 可解析");
+        let declared: Vec<String> = v["services"]
+            .as_array()
+            .expect("plugin.json services 数组")
+            .iter()
+            .filter_map(|s| s["name"].as_str().map(str::to_string))
+            .collect();
+        let live: Vec<String> = SERVICE_NAMES.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            live, declared,
+            "SERVICE_NAMES 与 plugin.json 声明漂移——新增/删除服务须两处同步"
+        );
+    }
+
+    /// /services 响应形态与 server fetch_host_services 的解析契约一致
+    /// (顶层 services 数组、元素为非空字符串)
+    #[test]
+    fn services_payload_matches_server_contract() {
+        let body = serde_json::json!({ "services": SERVICE_NAMES });
+        let arr = body
+            .get("services")
+            .and_then(|s| s.as_array())
+            .expect("services 数组");
+        assert!(arr.len() > 0);
+        for item in arr {
+            let n = item.as_str().expect("服务名须为字符串");
+            assert!(!n.is_empty(), "服务名不得为空");
+        }
+    }
 }
