@@ -228,12 +228,13 @@ mod services_tests {
     /// 实载清单与 plugin.json 的 services 声明一致（双源防漂移:
     /// server 侧口径=本清单为身份事实源,声明仅为装载回退）
     #[test]
-    fn service_names_match_plugin_json_declaration() -> Result<(), serde_json::Error> {
+    fn service_names_match_plugin_json_declaration() -> Result<(), String> {
         let raw = include_str!("../plugin.json");
-        let v: serde_json::Value = serde_json::from_str(raw)?;
+        let v: serde_json::Value =
+            serde_json::from_str(raw).map_err(|e| format!("plugin.json 解析失败: {e}"))?;
         let declared: Vec<String> = v["services"]
             .as_array()
-            .ok_or_else(|| serde_json::Error::custom("plugin.json 缺 services 数组"))?
+            .ok_or_else(|| "plugin.json 缺 services 数组".to_string())?
             .iter()
             .filter_map(|s| s["name"].as_str().map(str::to_string))
             .collect();
@@ -242,7 +243,6 @@ mod services_tests {
             live, declared,
             "SERVICE_NAMES 与 plugin.json 声明漂移——新增/删除服务须两处同步"
         );
-        Ok(())
     }
 
     /// /services 响应形态与 server fetch_host_services 的解析契约一致
