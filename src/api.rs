@@ -250,15 +250,17 @@ mod services_tests {
     /// /services 响应形态与 server fetch_host_services 的解析契约一致
     /// (顶层 services 数组、元素为非空字符串)
     #[test]
-    fn services_payload_matches_server_contract() {
+    fn services_payload_matches_server_contract() -> Result<(), String> {
         let body = serde_json::json!({ "services": SERVICE_NAMES });
-        let Some(arr) = body.get("services").and_then(|s| s.as_array()) else {
-            panic!("services 数组缺失");
-        };
+        let arr = body
+            .get("services")
+            .and_then(|s| s.as_array())
+            .ok_or_else(|| "services 数组缺失".to_string())?;
         assert!(!arr.is_empty());
         for item in arr {
             let n = item.as_str().unwrap_or_default();
             assert!(!n.is_empty(), "服务名不得为空");
         }
+        Ok(())
     }
 }
