@@ -256,10 +256,13 @@ mod services_tests {
             .get("services")
             .and_then(|s| s.as_array())
             .ok_or_else(|| "services 数组缺失".to_string())?;
-        assert!(!arr.is_empty());
+        if arr.is_empty() {
+            return Err("services 数组为空".to_string());
+        }
         for item in arr {
-            let n = item.as_str().unwrap_or_default();
-            assert!(!n.is_empty(), "服务名不得为空");
+            if item.as_str().map(str::is_empty).unwrap_or(true) {
+                return Err("services 含空服务名".to_string());
+            }
         }
         Ok(())
     }
