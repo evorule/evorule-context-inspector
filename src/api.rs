@@ -239,10 +239,11 @@ mod services_tests {
             .filter_map(|s| s["name"].as_str().map(str::to_string))
             .collect();
         let live: Vec<String> = SERVICE_NAMES.iter().map(|s| s.to_string()).collect();
-        assert_eq!(
-            live, declared,
-            "SERVICE_NAMES 与 plugin.json 声明漂移——新增/删除服务须两处同步"
-        );
+        if live != declared {
+            return Err(format!(
+                "SERVICE_NAMES 与 plugin.json 声明漂移——新增/删除服务须两处同步: live={live:?} declared={declared:?}"
+            ));
+        }
         Ok(())
     }
 
@@ -251,10 +252,9 @@ mod services_tests {
     #[test]
     fn services_payload_matches_server_contract() {
         let body = serde_json::json!({ "services": SERVICE_NAMES });
-        let arr = body
-            .get("services")
-            .and_then(|s| s.as_array())
-            .expect("services 数组");
+        let Some(arr) = body.get("services").and_then(|s| s.as_array()) else {
+            panic!("services 数组缺失");
+        };
         assert!(!arr.is_empty());
         for item in arr {
             let n = item.as_str().unwrap_or_default();
