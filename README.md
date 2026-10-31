@@ -1,57 +1,56 @@
-# evorule-llm-context-inspector
+# evorule-context-inspector
 
-> LLM 上下文快照与健康评估审计链 —— 把 agent 决策时的上下文结构化入独立 BLAKE3 审计链，
-> 让「agent 决策时看到了什么」可验证、可回放、可审计。
+> LLM context snapshot and health audit chain — structure what the agent saw at decision time into a standalone BLAKE3 audit chain, making "what the agent saw" verifiable, replayable, and private by default.
 
-**状态**:🟡 Phase 0 骨架(设计超前于代码是常态,代码为唯一标准)
-**执行基线**:以仓内代码为准;实施文档随阶段推进在本仓 `docs/` 公开(建设中)
+[![CI][badge-ci]][ci-link]
+[![License: AGPL-3.0-or-later][badge-license]][license-link]
 
-## 这是什么
+**License**: [AGPL-3.0-or-later](LICENSE) with [dual licensing](DUAL_LICENSE.md)
 
-evorule 治理 LLM agent 的规则决策时,审计链记录了规则执行事实(触发哪条规则/命中什么 trace/因果链),
-但 **agent 做决策时 context window 长什么样完全看不见**。本仓补上这条链:
+The engine's audit chain records rule-execution facts (which rule fired, what trace hit, the causal chain), but what the agent's context window looked like at decision time stays invisible. This repo adds that chain:
 
-- **请求侧** `ContextSnapshot`:LLM 调用发出前的上下文定格(组成 token 计数 + 结构骨架)
-- **响应侧** `ResponseObservation`:回包后追加(真实 usage / finish_reason / 截断检测),按 `response_to` 配对
-- **五维健康指标**:压力(四档左闭右开)/ cache 命中率 / 漂移(multiset Jaccard + SystemPromptChanged / ToolSetChanged / ContextReset 三显式检测)/ 截断 / 重复率(word-shingle),全万分比整数存储
-- **独立 BLAKE3 审计链**:链步复用 `evorule-reactor::chain_step`,链头定期入 G-A1 Ed25519 锚点流
-- **插件形态**(实施文档 v3.1):manifest 型插件(Plugin Contract v1.2,ai-plugin 同款),独立进程承载 MITM 监听 + 审计链 + context API + `/admin/bindings`,evorule-server 仓零机制改动;端口段 19100(loopback-only)
+- **Request side** — `ContextSnapshot`: the context frozen just before an LLM call goes out (token counts + structural skeleton)
+- **Response side** — `ResponseObservation`: appended after the reply (real usage / finish reason / truncation detection), paired via `response_to`
+- **Five health dimensions** — pressure (four left-closed bands), cache hit rate, drift (multiset Jaccard plus explicit SystemPromptChanged / ToolSetChanged / ContextReset detections), truncation, and repetition (word-shingle); all stored as basis-point integers
+- **Standalone BLAKE3 audit chain** — chain steps reuse the reactor's `chain_step`; the chain head is periodically anchored into the governance Ed25519 anchor stream
+- **Plugin form** — a manifest-type plugin running as a standalone process (MITM listener + audit chain + context API + `/admin/bindings`), with zero mechanism changes in evorule-server
 
-## 隐私模型(默认强隐私)
+## Privacy model (strong privacy by default)
 
-| 层 | 内容 | 默认存储 |
-|----|------|---------|
-| 每条内容哈希 | system / tool / message 原文的 BLAKE3 | 只存哈希,不存原文 |
-| `skeleton_hash` | canonical JSON(结构骨架) | 恒存 —— **从存储结构即可重算,链验证强语义** |
-| `content_hash` | 完整 messages+tools 原文哈希 | 仅 `--store-content` 时原文旁挂文件存放,**不入链** |
+| Layer | Content | Default storage |
+|---|---|---|
+| Per-item content hash | BLAKE3 of each system / tool / message original | hash only, never the original text |
+| `skeleton_hash` | canonical JSON structural skeleton | always stored — recomputable from storage alone, the strong semantics of chain verification |
+| `content_hash` | hash of the full messages + tools originals | only with `--store-content`, kept in a sidecar file, **never chained** |
 
-任何哈希输入均不含 HTTP header(`Authorization` / `x-api-key` 永不进哈希、日志与落盘)。
+No hash input ever includes HTTP headers (`Authorization` / `x-api-key` never enter hashes, logs, or disk).
 
-## 哈希依赖(B 族纪律)
+Hashing uses [evorule-hash](https://github.com/evorule/evorule-hash) primitives (`digest` / `json_digest`) — no self-rolled blake3; canonical JSON is serde_json's default BTreeMap key order (`preserve_order` off). This repo's hash domain is registered in the hash crate's domain registry.
 
-- 内容哈希 → `evorule_hash::digest` / `json_digest`(禁自写 blake3)
-- 链步 → `evorule_reactor::chain_step`(`blake3(prev + content)`,genesis=`"genesis"`),库依赖复用,不触碰规则执行路径
-- canonical JSON → serde_json 默认 BTreeMap 键序,禁开 `preserve_order`
-- 本仓哈希域登记于 `D:\evorule-hash\README.md` 哈希域注册表(Phase 1 落地)
+> [!NOTE]
+> **Status: Phase 0 (skeleton and registry registration) is complete.** Later phases — data model, providers and streaming, chain and plugin integration, UI, docs — land incrementally; the in-repo code is the single source of truth, and implementation docs land in `docs/` as phases progress.
 
-## 阶段计划(实施文档 §4)
+## Prerequisites
 
-| Phase | 内容 | 状态 |
-|-------|------|------|
-| 0 | 骨架与 registry 登记 | ✅(42a263c) |
-| 1 | 数据模型与哈希(canonical JSON + skeleton_hash + 域登记) | ☐ |
-| 2 | Provider 与流式(4 provider + SSE) | ☐ |
-| 3 | 链与插件集成(InspectorLog + MITM + verify-chain 协同;v3.1 插件形态) | ☐ |
-| 4 | UI(声明式资产 + 通用外壳;R4 约束) | ☐ |
-| 5 | 文档与发布 | ☐ |
+- Rust toolchain (pinned by `rust-toolchain.toml`)
+- Sibling checkouts of `evorule` and `evorule-hash` — the kernel crates are path dependencies during the skeleton phase
 
-## 工程纪律
+## Build
 
-- G5 代码质量:0 panic / unwrap / expect(lints deny 级,测试模块除外)
-- 测试为唯一证据:验收矩阵 20 条全带测试路径;覆盖率 gate(Windows cargo-llvm-cov / CI Linux tarpaulin)
-- 每阶段 DoD:fmt / clippy 净 + test 全绿 + 覆盖率 gate + 密扫 PASS + commit
+```bash
+cargo build
+cargo test
+```
 
-## 许可
+## Run
 
-**AGPL-3.0-or-later** —— 见 [LICENSE](LICENSE) / [NOTICE.md](NOTICE.md);
-双许可决策指引见 [DUAL_LICENSE.md](DUAL_LICENSE.md)。
+The plugin process (MITM listener + context API + `/admin/bindings`) listens on the 19100 port range, loopback-only — it never exposes a network interface.
+
+## License
+
+**AGPL-3.0-or-later**: [LICENSE](LICENSE) / [NOTICE.md](NOTICE.md); dual-licensing guidance in [DUAL_LICENSE.md](DUAL_LICENSE.md), with [FREE_COMMERCIAL_LICENSE.md](FREE_COMMERCIAL_LICENSE.md) (free waiver for eligible entities) and [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md).
+
+[badge-ci]: https://github.com/evorule/evorule-context-inspector/actions/workflows/ci.yml/badge.svg
+[ci-link]: https://github.com/evorule/evorule-context-inspector/actions/workflows/ci.yml
+[badge-license]: https://img.shields.io/badge/license-AGPL--3.0--or--later-blue?style=flat-square
+[license-link]: LICENSE
